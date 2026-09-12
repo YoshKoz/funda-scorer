@@ -16,9 +16,9 @@
    Screenshot: SCREENSHOT=/tmp/paneel.png */
 "use strict";
 
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { laadPlaywright, chromiumPad } = require("./browser.cjs");
 
 const FIX = path.join(__dirname, "fixtures");
@@ -87,7 +87,7 @@ const VERWACHT = {
             page.on("console", (m) => console.log(`     [console:${m.type()}] ${m.text()}`));
             page.on("pageerror", (e) => console.log(`     [pageerror] ${e.message}`));
             page.on("requestfailed", (r) =>
-                console.log(`     [requestfailed] ${r.url()} ${(r.failure() || {}).errorText}`)
+                console.log(`     [requestfailed] ${r.url()} ${r.failure()?.errorText}`)
             );
             page.on("response", (r) => {
                 if (r.url().includes("127.0.0.1")) console.log(`     [brug] ${r.status()} ${r.url()}`);

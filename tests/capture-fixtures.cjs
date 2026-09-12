@@ -8,8 +8,9 @@
    op de pagina die je zoekt"), daarom draait dit met een zichtbaar venster. */
 "use strict";
 
-const fs = require("fs");
-const path = require("path");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { laadPlaywright, chromiumPad } = require("./browser.cjs");
 
 const FIX = path.join(__dirname, "fixtures");
@@ -22,7 +23,7 @@ const DOELEN = [
     const { chromium } = laadPlaywright();
     fs.mkdirSync(FIX, { recursive: true });
     const ctx = await chromium.launchPersistentContext(
-        fs.mkdtempSync(path.join(require("os").tmpdir(), "fs-cap-")),
+        fs.mkdtempSync(path.join(os.tmpdir(), "fs-cap-")),
         {
             executablePath: chromiumPad(),
             headless: false,

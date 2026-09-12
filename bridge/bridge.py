@@ -444,8 +444,12 @@ class Handler(BaseHTTPRequestHandler):
         _cache[url] = data
         self._send(200, data)
 
-    def log_message(self, fmt: str, *args) -> None:
-        sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
+    # De parameter heet bewust `format`: dat is de naam in de signatuur van
+    # BaseHTTPRequestHandler.log_message, en een afwijkende naam geeft een
+    # overridewaarschuwing. Binnen deze methode gebruiken we het builtin
+    # format() niet.
+    def log_message(self, format: str, *args) -> None:  # noqa: A002
+        sys.stderr.write("%s %s\n" % (self.address_string(), format % args))
 
 
 def main() -> None:

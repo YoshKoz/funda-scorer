@@ -1,0 +1,10 @@
+{
+    // De brug draait in zijn eigen venv, met pyfunda als editable install.
+    // Zonder deze verwijzing kan de taal server `from funda import ...` niet
+    // vinden en staat de hele bridge.py volg met onopgeloste imports.
+    "python.defaultInterpreterPath": "${workspaceFolder}/bridge/.venv/bin/python",
+    "python.analysis.extraPaths": [
+        "./pyfunda"
+    ],
+    "python.analysis.diagnosticMode": "workspace"
+}

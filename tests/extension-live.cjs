@@ -13,9 +13,9 @@
 
 "use strict";
 
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { laadPlaywright, chromiumPad } = require("./browser.cjs");
 
 const WORTEL = path.resolve(__dirname, "..");
@@ -33,14 +33,16 @@ async function accepteerCookies(page) {
         () => page.locator("#didomi-host iframe").contentFrame().getByRole("button", { name: /alles accepteren/i }).click({ timeout: 6000 }),
         () => page.frameLocator('iframe[title*="toestemming" i]').getByRole("button", { name: /accepteren/i }).click({ timeout: 5000 }),
         () => page.getByRole("button", { name: /alles accepteren/i }).click({ timeout: 3000 }),
-        () => page.evaluate(() => { try { window.Didomi && Didomi.setUserAgreeToAll(); } catch (e) { } }),
+        () => page.evaluate(() => { try { window.Didomi?.setUserAgreeToAll(); } catch { /* geen Didomi op deze pagina */ } }),
     ];
     for (const poging of pogingen) {
         try {
             await poging();
             await page.waitForTimeout(1500);
             return true;
-        } catch (e) { }
+        } catch {
+            // Deze methode bestaat niet op deze pagina; de volgende proberen.
+        }
     }
     return false;
 }

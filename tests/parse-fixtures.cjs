@@ -7,13 +7,13 @@
 */
 "use strict";
 
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { laadPlaywright, chromiumPad } = require("./browser.cjs");
 
 const FIX = path.join(__dirname, "fixtures");
-const SCRIPT = fs.readFileSync(path.join(__dirname, "..", "extension", "scoring.js"), "utf8");
+const SCRIPT_PAD = path.join(__dirname, "..", "extension", "scoring.js");
 
 const VERWACHT = {
     "appartement.html": {
@@ -39,7 +39,7 @@ const VERWACHT = {
 
 // Een lege rij in de kenmerken-tabel liet de volgende kopregel als waarde
 // doorgaan. Geen enkel veld mag daarom een sectiekop als waarde hebben.
-const KOPPEN = [
+const KOPPEN = new Set([
     "Overdracht",
     "Bouw",
     "Oppervlakten en inhoud",
@@ -50,13 +50,59 @@ const KOPPEN = [
     "Parkeergelegenheid",
     "VvE checklist",
     "Bergruimte"
-];
+]);
 
-(async () => {
+// ---------- controles ----------
+
+function telControle(tel, ok, regel) {
+    tel.checks++;
+    if (!ok) tel.fouten++;
+    console.log(regel);
+}
+
+function controleerVelden(bestand, parsed, tel) {
+    for (const [veld, waarde] of Object.entries(VERWACHT[bestand] || {})) {
+        const ok = parsed[veld] === waarde;
+        telControle(
+            tel,
+            ok,
+            `${ok ? "OK  " : "FAIL"} ${bestand} ${veld} = ${JSON.stringify(parsed[veld])}` +
+            (ok ? "" : ` (verwacht ${JSON.stringify(waarde)})`)
+        );
+    }
+}
+
+function controleerKoppen(bestand, parsed, tel) {
+    const besmet = Object.entries(parsed).filter(
+        ([, waarde]) => typeof waarde === "string" && KOPPEN.has(waarde)
+    );
+    const ok = besmet.length === 0;
+    telControle(
+        tel,
+        ok,
+        ok
+            ? `OK   ${bestand} geen kopregel als waarde`
+            : `FAIL ${bestand} kopregel als waarde: ` +
+            besmet.map(([v, w]) => `${v}=${w}`).join(", ")
+    );
+}
+
+function fixtureBestanden() {
+    if (!fs.existsSync(FIX)) return [];
+    return fs.readdirSync(FIX).filter((f) => f.endsWith(".html")).sort();
+}
+
+// scoring.js is een gewoon script: we laden het bestand in de pagina met een
+// script-tag in plaats van de inhoud als code te evalueren.
+async function parseBestand(page, bestand) {
+    await page.goto("file://" + path.join(FIX, bestand), { waitUntil: "domcontentloaded" });
+    await page.addScriptTag({ path: SCRIPT_PAD });
+    return page.evaluate(() => FundaScore.parseListing());
+}
+
+async function main() {
     const { chromium } = laadPlaywright();
-    const bestanden = fs.existsSync(FIX)
-        ? fs.readdirSync(FIX).filter((f) => f.endsWith(".html")).sort()
-        : [];
+    const bestanden = fixtureBestanden();
     if (!bestanden.length) {
         console.error("Geen fixtures in " + FIX);
         console.error("Draai eerst: node tests/capture-fixtures.cjs");
@@ -68,41 +114,21 @@ const KOPPEN = [
         { executablePath: chromiumPad(), headless: true }
     );
     const page = ctx.pages()[0] || (await ctx.newPage());
-    let fouten = 0;
-    let checks = 0;
+    const tel = { checks: 0, fouten: 0 };
 
     for (const bestand of bestanden) {
-        await page.goto("file://" + path.join(FIX, bestand), { waitUntil: "domcontentloaded" });
-        const parsed = await page.evaluate(
-            (code) => new Function(code + "; return FundaScore;")().parseListing(),
-            SCRIPT
-        );
-
-        for (const [veld, waarde] of Object.entries(VERWACHT[bestand] || {})) {
-            checks++;
-            const ok = parsed[veld] === waarde;
-            if (!ok) fouten++;
-            console.log(
-                `${ok ? "OK  " : "FAIL"} ${bestand} ${veld} = ${JSON.stringify(parsed[veld])}` +
-                (ok ? "" : ` (verwacht ${JSON.stringify(waarde)})`)
-            );
-        }
-
-        checks++;
-        const besmet = Object.entries(parsed).filter(
-            ([, waarde]) => typeof waarde === "string" && KOPPEN.includes(waarde)
-        );
-        if (besmet.length) {
-            fouten++;
-            console.log(
-                `FAIL ${bestand} kopregel als waarde: ` + besmet.map(([v, w]) => `${v}=${w}`).join(", ")
-            );
-        } else {
-            console.log(`OK   ${bestand} geen kopregel als waarde`);
-        }
+        const parsed = await parseBestand(page, bestand);
+        controleerVelden(bestand, parsed, tel);
+        controleerKoppen(bestand, parsed, tel);
     }
 
     await ctx.close();
-    console.log(fouten === 0 ? `\n${checks} checks OK` : `\n${fouten} van ${checks} checks mislukt`);
-    process.exit(fouten === 0 ? 0 : 1);
-})();
+    console.log(
+        tel.fouten === 0
+            ? `\n${tel.checks} checks OK`
+            : `\n${tel.fouten} van ${tel.checks} checks mislukt`
+    );
+    process.exit(tel.fouten === 0 ? 0 : 1);
+}
+
+main();
