@@ -1,0 +1,8 @@
+certifi==2026.7.22
+cffi==2.1.1
+curl_cffi==0.16.0
+pycparser==3.0
+# Editable install with no version control (pyfunda==3.1.4)
+-e c:\development\pyfunda
+tls-client==1.0.1
+typing_extensions==4.16.0

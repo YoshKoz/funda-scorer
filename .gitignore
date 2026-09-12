@@ -1,0 +1,16 @@
+# venv van de brug (groot, machine-specifiek)
+bridge/.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# test-uitvoer
+tests/.artifacts/
+
+# pyfunda is een losse third-party clone (AGPL-3.0, heeft zijn eigen .git en
+# lokale wijzigingen). Niet vendoren: een verse checkout haalt hem apart op met
+#   git clone https://github.com/0xMH/pyfunda
+# en installeert hem met
+#   bridge/.venv/bin/pip install -e ./pyfunda
+pyfunda/
