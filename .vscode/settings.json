@@ -6,5 +6,12 @@
     "python.analysis.extraPaths": [
         "./pyfunda"
     ],
-    "python.analysis.diagnosticMode": "workspace"
+    // Alleen open bestanden analyseren: pyfunda is een vendor-kloon (derde partij,
+    // AGPL) met eigen typefouten; die horen niet in ons Problems-paneel.
+    "python.analysis.diagnosticMode": "openFilesOnly",
+    // Zelfde reden: pyfunda volgt de stijl van upstream (ruff, ~100 koloms regels),
+    // niet pycodestyle's 79. Onze eigen Python moet wel door flake8 komen.
+    "flake8.ignorePatterns": [
+        "**/pyfunda/**"
+    ]
 }
