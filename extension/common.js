@@ -82,15 +82,15 @@ const FundaCommon = (() => {
     function slugify(tekst) {
         return String(tekst || "")
             .toLowerCase()
-            .replace(/[^a-z0-9]+/g, "-")
-            .replace(/^-|-$/g, "");
+            .replaceAll(/[^a-z0-9]+/g, "-")
+            .replaceAll(/^-|-$/g, "");
     }
 
     // Labels uit innerText kunnen non-breaking spaces en dubbele spaties bevatten.
     function normaliseer(tekst) {
-        return String(tekst === null || tekst === undefined ? "" : tekst)
-            .replace(/[\u00a0\u2007\u202f]/g, " ")
-            .replace(/\s+/g, " ")
+        return String(tekst ?? "")
+            .replaceAll(/[\u00a0\u2007\u202f]/g, " ")
+            .replaceAll(/\s+/g, " ")
             .trim();
     }
 
@@ -101,11 +101,11 @@ const FundaCommon = (() => {
     const Store = {
         async weights() {
             const s = await lees(KEYS.weights);
-            return Object.assign({}, s[KEYS.weights] || {});
+            return { ...s[KEYS.weights] };
         },
         async filters() {
             const s = await lees(KEYS.filters);
-            return Object.assign({}, s[KEYS.filters] || {});
+            return { ...s[KEYS.filters] };
         },
         async houses() {
             const s = await lees(KEYS.houses);
@@ -116,7 +116,7 @@ const FundaCommon = (() => {
             const s = await lees([KEYS.houseIndex, KEYS.houses]);
             if (Array.isArray(s[KEYS.houseIndex])) return s[KEYS.houseIndex].includes(url);
             // oudere opslag zonder index: eenmalig terugvallen op de volledige map
-            return Boolean((s[KEYS.houses] || {})[url]);
+            return Boolean(s[KEYS.houses]?.[url]);
         },
         async bewaarHuis(huis) {
             const s = await lees([KEYS.houses, KEYS.houseIndex]);

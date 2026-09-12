@@ -1,19 +1,41 @@
-# funda-scorer (lokale dev-kopie)
+# Funda Scorer
 
-Chrome-extensie die een Funda-koopwoning leest, de kenmerken scoort op
-instelbare wegingen en in een ranglijst zet. Een lokale Python-brug verrijkt de
-pagina-tekst met Funda's eigen API via [pyfunda](https://github.com/0xMH/pyfunda).
+Chrome-extensie (Manifest V3) die een Funda-koopwoning uitleest, de kenmerken
+scoort op instelbare wegingen en ze in een ranglijst zet. Een kleine lokale
+Python-brug verrijkt de pagina met gegevens uit Funda's eigen API via
+[pyfunda](https://github.com/0xMH/pyfunda), en op de zoekpagina zet hij
+gekleurde ringen op de kaart.
 
-Deze map staat op de laptop op `~/code/funda-scorer` en is een kopie van de
-extensie die op de desktop-PC in
-`C:\Program Files (x86)\Chromextensions\funda-scorer-chrome` staat. Daar is het
-geen git-repo; hier staat alles bij elkaar zodat er op de laptop getest kan
-worden.
+Gemaakt voor het zoeken van een koopwoning: niet tien tabbladen vergelijken,
+maar één lijst met dezelfde meetlat.
 
-Let op: dit is geen `git clone`. Er is geen upstream-repo — `YoshKoz/funda-scorer`
-bestaat niet op GitHub (`git ls-remote` geeft "Repository not found", de API geeft
-404). De bestanden komen van de desktop. De enige echte git-repo in deze map is
-`pyfunda/`, met origin `0xMH/pyfunda`.
+## Wat het doet
+
+- **Scorepaneel op elke detailpagina** — prijs, prijs per m², woonoppervlak,
+  energielabel, bouwjaar, tuin, isolatie, cv-ketel, berging en meer, met per
+  metriek een cijfer en een onderbouwing.
+- **Eén eindscore** van 1 tot 10, opgebouwd uit vier metrieken die Funda zelf ook
+  levert. Daardoor is de score op de pagina hetzelfde getal als de ring op de
+  kaart.
+- **Referentieaanbod** — staat de brug aan, dan scoort de extensie percentiel
+  binnen het aanbod in dezelfde stad (mediaan = 6, p90 = 8). Zonder brug gebruikt
+  hij vaste schalen.
+- **Ranglijst in de popup** — huizen opslaan, sorteren op score, waarde-index,
+  prijs of prijs per m², en exporteren naar CSV.
+- **Breekpunten** — harde eisen (minimaal aantal slaapkamers, woonoppervlak,
+  maximale prijs, tuin of berging verplicht) markeren wat afvalt, zonder de score
+  te veranderen.
+- **Prijshistorie op adres** — inclusief woningen die niet meer op Funda staan,
+  via Walter op adres en postcode.
+- **Kleurige kaartlaag** — ringen op de zoekresultaten op basis van de score.
+
+## Wat je nodig hebt
+
+- Chrome of Chromium 111 of nieuwer
+- Python 3.14 of nieuwer, voor de optionele brug
+
+De extensie werkt ook zónder brug: dan leest hij alleen de paginatekst en
+vervallen de percentielscores, de prijshistorie en de kaartlaag.
 
 ## Wat zit waar
 
@@ -36,22 +58,14 @@ bridge/.venv/bin/pip install -e ./pyfunda
 
 `pyfunda` vereist Python >= 3.14.
 
-## Versiebeheer
+## Herkomst en versiebeheer
 
-Deze map is een git-repo op branch `main`. `pyfunda/` staat in `.gitignore`:
-dat is een losse third-party clone (AGPL-3.0) met een eigen `.git` en lokale
-wijzigingen, dus die wordt niet meegecommit. Een verse checkout haalt hem apart
-op (zie hierboven).
+`pyfunda/` wordt **niet** meegeleverd. Dat is een aparte third-party clone
+(AGPL-3.0) met een eigen git-historie; haal hem op zoals hierboven staat.
 
-Er is nog geen remote. Om te pushen:
-
-```bash
-git remote add origin git@github.com:YoshKoz/funda-scorer.git
-git push -u origin main
-```
-
-Let op: `~` (`/home/yoshkoz`) is zelf ook een git-repo, dus deze map is daarbinnen
-een geneste repo. Doe geen `git add .` vanuit je home.
+De extensie hangt af van de opbouw van Funda's pagina's. Verandert Funda de
+indeling, dan blijven velden leeg en meldt het paneel welke metrieken ontbreken,
+in plaats van ze als 0 te tellen.
 
 ## Draaien
 
@@ -59,11 +73,10 @@ een geneste repo. Doe geen `git add .` vanuit je home.
 ./run-bridge.sh          # print bijv. http://127.0.0.1:8767
 ```
 
-De brug kiest de eerste vrije poort uit `8765, 8767-8770`. Poort **8765 is op
-deze laptop bezet** door de claudecodebrowser-MCP (`~/.claudecodebrowser`), dus
-in de praktijk wordt het 8767. De extensie zoekt zelf een werkende poort via
-`/health`, dus je hoeft niets in te stellen. Zet `FUNDA_BRIDGE_PORT` om een
-poort te forceren.
+De brug kiest de eerste vrije poort uit `8765, 8767-8770`. De extensie zoekt zelf
+een werkende poort via `/health`, dus je hoeft niets in te stellen. Is 8765 al
+bezet door iets anders (dat gebeurt snel), dan pakt de brug de volgende. Zet
+`FUNDA_BRIDGE_PORT` om een poort te forceren.
 
 De extensie laden:
 
@@ -169,10 +182,10 @@ staan (`%2C`, `.`) en de API geeft dan niets terug. Voor gewone buurtnamen
 werkt het wel. In dat geval toont het paneel het buurtgemiddelde van de pagina
 zelf.
 
-**Poort 8765 is bezet** door de claudecodebrowser-MCP. Daarom is de poort van de
-brug instelbaar (`FUNDA_BRIDGE_PORT`) en zoekt de extensie hem zelf op. De
-extensie controleert daarbij op `ok === true` in `/health`, want die andere
-server antwoordt op dezelfde poort met een ander formaat.
+**Poort 8765 kan al bezet zijn.** Daarom is de poort van de brug instelbaar
+(`FUNDA_BRIDGE_PORT`) en zoekt de extensie hem zelf op. De extensie controleert
+daarbij op `ok === true` in `/health`: een willekeurige andere server op dezelfde
+poort antwoordt wel, maar met een ander formaat.
 
 **Chrome negeert `--load-extension`** (zie boven). Playwright's Chromium werkt
 wel.
@@ -194,33 +207,15 @@ daarom `Access-Control-Allow-Private-Network: true` mee.
 **Geen `icons` in het manifest.** Ontbreekt nog; Chrome toont een
 standaardpictogram.
 
-## Verschil met de desktop-versie
+## Licentie
 
-De desktop-versie is 1.3.0, deze kopie 1.4.0.
+De code in deze repository is MIT-gelicenseerd; zie `LICENSE`.
 
-- `bridge/bridge.py`: poort komt uit `FUNDA_BRIDGE_PORT` in plaats van hardcoded
-  8765; `Access-Control-Allow-Private-Network: true` in de CORS-headers (1.3.1).
-- `extension/common.js`: nieuw — gedeelde api/opslag/opmaak.
-- `extension/scoring.js`: referentie is een argument in plaats van verborgen
-  staat; ontbrekende velden scoren `null` in plaats van 0; `dekking` in het
-  resultaat; kopregel-beveiliging in de parser; één implementatie voor
-  tuinoppervlak in plaats van twee; `woonopp` zonder referentie gebruikt een band
-  per woningtype; energielabel uit de API (`A3`) wordt gelijkgetrokken met de
-  paginanotatie (`A+++`); `typeHint` leidt het woningtype uit url en titel af
-  omdat het label "Soort woonhuis" bij appartementen ontbreekt.
-- `extension/content.js` + `popup.js`: gebruiken `common.js`; de popup toont
-  alleen nog weegbare metrieken als invoerveld; opslaan gaat via `Store`.
-- `extension/map.js`: gebruikt `resolveBridgeUrl()` in plaats van de hardcoded
-  `BRIDGE_URL` (op deze machine staat de brug op 8767, dus de kaartlaag deed
-  hiervoor niets); `Set` in plaats van `ids.includes()`; het referentieaanbod
-  wordt één keer opgebouwd per set in plaats van bij elke kaartbeweging.
-- `extension/map-main.js`: leest de Pinia-store via meerdere paden en meldt het
-  als geen ervan werkt; volledige vingerafdruk van de cellen; pollen slaat over
-  als het tabblad verborgen is; stopt met zoeken naar de kaart na een minuut.
-- `extension/manifest.json`: `common.js` in de content scripts,
-  `unlimitedStorage`, en `browser_specific_settings` voor Firefox.
-  `world: "MAIN"` vereist Firefox ≥ 128.
+`pyfunda` is een apart project onder AGPL-3.0 en valt niet onder die licentie.
+Het wordt hier als dependency gebruikt en niet meegeleverd.
 
-De verouderde padverwijzing in de Claude-memory op de desktop
-(`C:\Development\funda-bridge`) klopt nog steeds niet; het echte pad is
-`C:\Development\projects\web-scraping\funda-bridge`.
+## Disclaimer
+
+Dit project is niet verbonden aan Funda of Walter. Het is bedoeld voor eigen
+gebruik, om openbare woninginformatie te ordenen. Respecteer de voorwaarden van
+Funda en gebruik het niet op een manier die hun dienst belast.

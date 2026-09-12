@@ -7,8 +7,8 @@
   const scoreClass = (s) => scoreKlasse(s, "", "");
 
   let houses = {};
-  let weights = Object.assign({}, FundaScore.DEFAULT_WEIGHTS);
-  let filters = Object.assign({}, FundaScore.DEFAULT_FILTERS);
+  let weights = { ...FundaScore.DEFAULT_WEIGHTS };
+  let filters = { ...FundaScore.DEFAULT_FILTERS };
 
   // Opgeslagen huizen zijn compleet (gescoord op de detailpagina), dus hier is
   // geen referentieaanbod nodig. Herberekenen gebeurt één keer per wijziging in
@@ -102,7 +102,7 @@
 
     doel.querySelectorAll("input[data-weeg]").forEach((inp) => {
       inp.addEventListener("change", async () => {
-        const v = parseInt(inp.value, 10);
+        const v = Number.parseInt(inp.value, 10);
         weights[inp.dataset.weeg] = Number.isNaN(v) ? 0 : Math.max(0, v);
         scoreCache = null;
         await FundaCommon.schrijf({ weights });
@@ -154,13 +154,13 @@
       "liggingRaw"
     ];
     const rijen = sorteer(berekend(), document.getElementById("sort").value);
-    const esc = (v) => `"${String(v === null || v === undefined ? "" : v).replace(/"/g, '""')}"`;
+    const esc = (v) => `"${String(v ?? "").replaceAll('"', '""')}"`;
     const lines = [kolommen.concat(["score", "waarde-index", "breekpunten"]).join(";")];
     rijen.forEach((r) => {
-      const cells = kolommen.map((k) => esc(r.huis[k]));
-      cells.push(esc(r.score === null ? "" : r.score.toFixed(2)));
-      cells.push(esc(r.waarde === null ? "" : r.waarde.toFixed(2)));
-      cells.push(esc(r.vlaggen.join(" / ")));
+      const score = esc(r.score === null ? "" : r.score.toFixed(2));
+      const waarde = esc(r.waarde === null ? "" : r.waarde.toFixed(2));
+      const vlaggen = esc(r.vlaggen.join(" / "));
+      const cells = [...kolommen.map((k) => esc(r.huis[k])), score, waarde, vlaggen];
       lines.push(cells.join(";"));
     });
     const blob = new Blob(["\ufeff" + lines.join("\n")], {
@@ -181,7 +181,7 @@
     uit.innerHTML = '<p class="leeg">Bezig…</p>';
     const data = await FundaScore.fetchAdres(q);
 
-    if (!data || !data.ok) {
+    if (!data?.ok) {
       uit.innerHTML = `<p class="leeg">${(data && (data.error || data.adres)) || "geen resultaat"
         }</p>`;
       return;
@@ -204,8 +204,8 @@
       FundaCommon.Store.filters()
     ]);
     houses = bewaardHouses;
-    weights = Object.assign({}, FundaScore.DEFAULT_WEIGHTS, bewaardWeights);
-    filters = Object.assign({}, FundaScore.DEFAULT_FILTERS, bewaardFilters);
+    weights = { ...FundaScore.DEFAULT_WEIGHTS, ...bewaardWeights };
+    filters = { ...FundaScore.DEFAULT_FILTERS, ...bewaardFilters };
     scoreCache = null;
 
     tekenWegingen();
@@ -230,7 +230,7 @@
     document.getElementById("export").addEventListener("click", csv);
 
     document.getElementById("reset-wegingen").addEventListener("click", async () => {
-      weights = Object.assign({}, FundaScore.DEFAULT_WEIGHTS);
+      weights = { ...FundaScore.DEFAULT_WEIGHTS };
       scoreCache = null;
       await FundaCommon.schrijf({ weights });
       tekenWegingen();
@@ -241,7 +241,7 @@
       document.getElementById(id).addEventListener("change", async (e) => {
         if (type === "check") filters[key] = e.target.checked;
         else {
-          const v = parseInt(e.target.value, 10);
+          const v = Number.parseInt(e.target.value, 10);
           filters[key] = Number.isNaN(v) ? 0 : Math.max(0, v);
         }
         scoreCache = null;

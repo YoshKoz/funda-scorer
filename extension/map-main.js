@@ -44,7 +44,7 @@
   }
 
   function patchMaps(maps) {
-    if (!maps || !maps.Map) return false;
+    if (!maps?.Map) return false;
 
     patchPrototype(maps.Map.prototype, (proto) => {
       for (const name of MAP_METHODS) {
@@ -162,13 +162,15 @@
     const paden = [
       () => window.useNuxtApp().$pinia.state.value.search,
       () => window.useNuxtApp().$pinia.state.value.funda.search,
-      () => window.__NUXT__ && window.__NUXT__.state && window.__NUXT__.state.search
+      () => window.__NUXT__?.state?.search
     ];
     for (const pad of paden) {
       try {
         const s = pad();
         if (s && Array.isArray(s.mapAggregations)) return s;
-      } catch (e) { }
+      } catch {
+        /* dit pad bestaat niet in deze Funda-versie */
+      }
     }
     return null;
   }
@@ -190,8 +192,8 @@
 
     return aggs
       .map((agg) => {
-        const location = agg.centroid && agg.centroid.location;
-        const hits = (agg.global_ids && agg.global_ids.hits && agg.global_ids.hits.hits) || [];
+        const location = agg.centroid?.location;
+        const hits = agg.global_ids?.hits?.hits ?? [];
         return {
           key: String(agg.key),
           lat: location ? location.lat : null,
@@ -218,7 +220,7 @@
   }
 
   window.addEventListener("message", (event) => {
-    if (event.source !== window) return;
+    if (event.source !== window || event.origin !== location.origin) return;
     const data = event.data;
     if (!data) return;
     if (data.source === MSG_STATUS) {
@@ -229,16 +231,16 @@
       return;
     }
     if (data.source !== MSG_COLORS) return;
-    colors = Object.assign({}, colors, data.colors || {});
+    colors = { ...colors, ...data.colors };
     render();
   });
 
   // blijven pollen tot we een kaart hebben: de loader hangt de echte klassen
   // pas later in google.maps, en vervangt de stub die er eerst stond.
   const patchTimer = setInterval(() => {
-    if (patchMaps(window.google && window.google.maps)) clearInterval(patchTimer);
+    if (patchMaps(window.google?.maps)) clearInterval(patchTimer);
   }, 50);
-  patchMaps(window.google && window.google.maps);
+  patchMaps(window.google?.maps);
   // Niet oneindig blijven zoeken naar de kaart: anders loopt er op elke
   // zoekpagina een timer door.
   setTimeout(() => clearInterval(patchTimer), 60000);

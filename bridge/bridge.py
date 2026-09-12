@@ -9,7 +9,7 @@ import sys
 import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import ParseResult, parse_qs, urlencode, urlparse
 
 from funda import Funda
 from funda.listing import Address, Listing, Urls
@@ -50,18 +50,33 @@ def _geocode(query: str) -> dict | None:
 
 
 def _title_variants(street: str, number: str) -> list[str]:
-    # PDOK schrijft "132A", Funda/Walter "132-A"; alleen de exacte spelling geeft een hit.
+    # PDOK schrijft "132A", Funda/Walter "132-A"; alleen de exacte spelling
+    # geeft een hit.
     forms = [number]
     match = re.fullmatch(r"(\d+)[\s-]?([A-Za-z]+)", number)
     if match:
         digits, suffix = match.groups()
-        forms += [f"{digits}-{suffix}", f"{digits} {suffix}", f"{digits}{suffix}"]
+        forms += [
+            f"{digits}-{suffix}",
+            f"{digits} {suffix}",
+            f"{digits}{suffix}",
+        ]
     seen = []
     for form in forms:
         title = f"{street} {form}"
         if title not in seen:
             seen.append(title)
     return seen
+
+
+def _mutatie(change) -> dict:
+    """Eén prijswijziging als plat dict voor de extensie."""
+    return {
+        "datum": change.date,
+        "prijs": change.price,
+        "status": change.status,
+        "bron": change.source,
+    }
 
 
 def _address_history(query: str) -> dict:
@@ -76,9 +91,10 @@ def _address_history(query: str) -> dict:
     title = None
     last_error = None
     for candidate in _title_variants(doc["straatnaam"], str(doc["huis_nlt"])):
+        synth = SYNTH_URL.format(city=_slug(city), slug=_slug(candidate))
         listing = Listing(
             address=Address(title=candidate, postcode=postcode, city=city),
-            urls=Urls(full=SYNTH_URL.format(city=_slug(city), slug=_slug(candidate))),
+            urls=Urls(full=synth),
         )
         try:
             with _lock:
@@ -95,10 +111,7 @@ def _address_history(query: str) -> dict:
             "error": f"geen Walter-historie: {last_error}",
         }
 
-    changes = [
-        {"datum": c.date, "prijs": c.price, "status": c.status, "bron": c.source}
-        for c in history.changes
-    ]
+    changes = [_mutatie(c) for c in history.changes]
     return {
         "ok": True,
         "adres": doc.get("weergavenaam") or title,
@@ -106,8 +119,12 @@ def _address_history(query: str) -> dict:
         "postcode": postcode,
         "stad": city,
         "prijsHistorie": changes,
-        "fundaEvents": [c for c in changes if (c["bron"] or "").lower() == "funda"],
-        "wozEvents": [c for c in changes if (c["bron"] or "").lower() == "woz"],
+        "fundaEvents": [
+            c for c in changes if (c["bron"] or "").lower() == "funda"
+        ],
+        "wozEvents": [
+            c for c in changes if (c["bron"] or "").lower() == "woz"
+        ],
     }
 
 
@@ -170,10 +187,7 @@ def _enrich(url: str) -> dict:
     try:
         with _lock:
             history = _client.price_history(listing)
-        out["prijsHistorie"] = [
-            {"datum": c.date, "prijs": c.price, "status": c.status, "bron": c.source}
-            for c in history.changes
-        ]
+        out["prijsHistorie"] = [_mutatie(c) for c in history.changes]
     except Exception as exc:
         out["prijsHistorieFout"] = str(exc)
 
@@ -231,12 +245,22 @@ def _area_filters(query: dict) -> dict:
 def _area_listings(area: str, max_pages: int, filters: dict) -> dict:
     with _lock:
         listings = list(
-            _client.iter_search(area, max_pages=max_pages, workers=8, category="buy", **filters)
+            _client.iter_search(
+                area,
+                max_pages=max_pages,
+                workers=8,
+                category="buy",
+                **filters,
+            )
         )
 
     buurten = _buurt_prijzen(listings)
 
-    out = [_kort(listing, buurten) for listing in listings if listing.global_id is not None]
+    out = [
+        _kort(listing, buurten)
+        for listing in listings
+        if listing.global_id is not None
+    ]
     return {
         "ok": True,
         "area": area,
@@ -252,7 +276,9 @@ def _kort(listing, buurten: dict) -> dict:
         "url": listing.url,
         "adres": listing.title,
         "buurt": listing.address.neighbourhood,
-        "buurtPrijsPerM2": buurten.get((listing.city, listing.address.neighbourhood)),
+        "buurtPrijsPerM2": buurten.get(
+            (listing.city, listing.address.neighbourhood)
+        ),
         "status": listing.property_details.status,
         "prijs": listing.price.amount,
         "prijsPerM2": _per_m2(listing.price.amount, listing.living_area),
@@ -276,7 +302,11 @@ def _listings_by_id(ids: list[int]) -> dict:
             if listing.global_id is not None:
                 _cache[f"id:{listing.global_id}"] = _kort(listing, buurten)
 
-    out = [_cache[f"id:{nummer}"] for nummer in ids if f"id:{nummer}" in _cache]
+    out = [
+        _cache[f"id:{nummer}"]
+        for nummer in ids
+        if f"id:{nummer}" in _cache
+    ]
     return {"ok": True, "count": len(out), "listings": out}
 
 
@@ -315,92 +345,102 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/health":
-            self._send(200, {"ok": True, "port": PORT, "version": VERSION})
+        routes = {
+            "/health": self._health,
+            "/adres": self._adres,
+            "/listings": self._listings,
+            "/area": self._area,
+            "/listing": self._listing,
+        }
+        route = routes.get(parsed.path)
+        if route is None:
+            self._fout(404, "unknown endpoint")
             return
-        if parsed.path == "/adres":
-            query = (parse_qs(parsed.query).get("q") or [""])[0].strip()
-            if not query:
-                self._send(400, {"ok": False, "error": "q ontbreekt"})
-                return
-            if query in _cache:
-                self._send(200, _cache[query])
-                return
-            try:
-                data = _address_history(query)
-            except Exception as exc:
-                self._send(502, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
-                return
-            if data.get("ok"):
-                _cache[query] = data
-            self._send(200 if data.get("ok") else 404, data)
-            return
+        route(parsed)
 
-        if parsed.path == "/listings":
-            ruw = (parse_qs(parsed.query).get("ids") or [""])[0]
-            try:
-                ids = [int(deel) for deel in ruw.split(",") if deel.strip()]
-            except ValueError:
-                self._send(400, {"ok": False, "error": "ids moeten getallen zijn"})
-                return
-            if not ids:
-                self._send(400, {"ok": False, "error": "ids ontbreekt"})
-                return
-            if len(ids) > MAX_IDS:
-                self._send(400, {"ok": False, "error": f"maximaal {MAX_IDS} ids per aanroep"})
-                return
-            try:
-                data = _listings_by_id(ids)
-            except Exception as exc:
-                self._send(502, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
-                return
-            self._send(200, data)
-            return
+    def _fout(self, code: int, bericht: str) -> None:
+        self._send(code, {"ok": False, "error": bericht})
 
-        if parsed.path == "/area":
-            query = parse_qs(parsed.query)
-            area = (query.get("area") or [""])[0].strip().lower()
-            if not re.fullmatch(r"[a-z0-9-]{2,60}", area):
-                self._send(400, {"ok": False, "error": "area ontbreekt of ongeldig"})
-                return
-            max_pages = int((query.get("max_pages") or ["60"])[0])
-            try:
-                filters = _area_filters(query)
-            except ValueError as exc:
-                self._send(400, {"ok": False, "error": f"ongeldig filter: {exc}"})
-                return
-            key = f"area:{area}:{max_pages}:{sorted(filters.items())}"
-            if key in _cache:
-                self._send(200, _cache[key])
-                return
-            try:
-                data = _area_listings(area, max_pages, filters)
-            except Exception as exc:
-                self._send(502, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
-                return
-            _cache[key] = data
-            self._send(200, data)
-            return
+    def _fout_uitzondering(self, exc: Exception) -> None:
+        self._fout(502, f"{type(exc).__name__}: {exc}")
 
-        if parsed.path != "/listing":
-            self._send(404, {"ok": False, "error": "unknown endpoint"})
-            return
+    def _health(self, _parsed: ParseResult) -> None:
+        self._send(200, {"ok": True, "port": PORT, "version": VERSION})
 
+    def _adres(self, parsed: ParseResult) -> None:
+        query = (parse_qs(parsed.query).get("q") or [""])[0].strip()
+        if not query:
+            self._fout(400, "q ontbreekt")
+            return
+        if query in _cache:
+            self._send(200, _cache[query])
+            return
+        try:
+            data = _address_history(query)
+        except Exception as exc:
+            self._fout_uitzondering(exc)
+            return
+        if data.get("ok"):
+            _cache[query] = data
+        self._send(200 if data.get("ok") else 404, data)
+
+    def _listings(self, parsed: ParseResult) -> None:
+        ruw = (parse_qs(parsed.query).get("ids") or [""])[0]
+        try:
+            ids = [int(deel) for deel in ruw.split(",") if deel.strip()]
+        except ValueError:
+            self._fout(400, "ids moeten getallen zijn")
+            return
+        if not ids:
+            self._fout(400, "ids ontbreekt")
+            return
+        if len(ids) > MAX_IDS:
+            self._fout(400, f"maximaal {MAX_IDS} ids per aanroep")
+            return
+        try:
+            data = _listings_by_id(ids)
+        except Exception as exc:
+            self._fout_uitzondering(exc)
+            return
+        self._send(200, data)
+
+    def _area(self, parsed: ParseResult) -> None:
+        query = parse_qs(parsed.query)
+        area = (query.get("area") or [""])[0].strip().lower()
+        if not re.fullmatch(r"[a-z0-9-]{2,60}", area):
+            self._fout(400, "area ontbreekt of ongeldig")
+            return
+        max_pages = int((query.get("max_pages") or ["60"])[0])
+        try:
+            filters = _area_filters(query)
+        except ValueError as exc:
+            self._fout(400, f"ongeldig filter: {exc}")
+            return
+        key = f"area:{area}:{max_pages}:{sorted(filters.items())}"
+        if key in _cache:
+            self._send(200, _cache[key])
+            return
+        try:
+            data = _area_listings(area, max_pages, filters)
+        except Exception as exc:
+            self._fout_uitzondering(exc)
+            return
+        _cache[key] = data
+        self._send(200, data)
+
+    def _listing(self, parsed: ParseResult) -> None:
         url = (parse_qs(parsed.query).get("url") or [""])[0]
         if not url.startswith("https://www.funda.nl/"):
-            self._send(400, {"ok": False, "error": "url must be a funda.nl detail url"})
+            self._fout(400, "url must be a funda.nl detail url")
             return
-
         if url in _cache:
             self._send(200, _cache[url])
             return
-
         try:
             data = _enrich(url)
         except Exception as exc:
-            self._send(502, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            self._fout_uitzondering(exc)
             return
-
         _cache[url] = data
         self._send(200, data)
 
@@ -409,8 +449,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    # Bewust http op 127.0.0.1 en geen TLS: de extensie draait op
+    # https://www.funda.nl en mag van Chrome alleen loopback over http
+    # benaderen. TLS zou hier niets toevoegen en de installatie alleen
+    # lastiger maken.
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"funda-bridge on http://{HOST}:{PORT}  (/listing?url=..., /area?area=..., /health)")
+    print(f"funda-bridge on http://{HOST}:{PORT}")
+    print("  /listing?url=...  /area?area=...  /adres?q=...  /health")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

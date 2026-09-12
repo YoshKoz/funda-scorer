@@ -43,7 +43,7 @@ const FundaScore = (() => {
   // heeft een rij geen waarde, dan staat de volgende kopregel er direct achter
   // en mag die niet als waarde gelden (gebeurde bij "Patio/atrium" ->
   // "Parkeergelegenheid").
-  const SECTIE_KOPPEN = [
+  const SECTIE_KOPPEN = new Set([
     "Overdracht",
     "Bouw",
     "Oppervlakten en inhoud",
@@ -57,7 +57,7 @@ const FundaScore = (() => {
     "Voorzieningen",
     "Servicekosten",
     "Garage"
-  ];
+  ]);
 
   const METRIC_LABELS = {
     prijsVsBuurt: "Prijs t.o.v. aanbod",
@@ -145,7 +145,7 @@ const FundaScore = (() => {
 
     // De ijkwaarden gebruiken dezelfde wegingen als de score zelf, anders is
     // het cijfer niet consistent met het ruwe getal.
-    const w = Object.assign({}, DEFAULT_WEIGHTS, weights || {});
+    const w = { ...DEFAULT_WEIGHTS, ...weights };
     const ruw = aanbod.map((h) => ruweScore(h, w, null)).filter((s) => s !== null);
     return { ladders, scores: ladder(ruw) };
   }
@@ -157,11 +157,13 @@ const FundaScore = (() => {
   }
 
   // "€ 235.000" / "1.234,50" -> 235000 / 1234.5
+  const GETAL_RE = /-?[\d.]+(?:,\d+)?/;
+
   function parseNumber(str) {
     if (!str) return null;
-    const m = String(str).replace(/\s/g, "").match(/-?[\d.]+(?:,\d+)?/);
+    const m = GETAL_RE.exec(String(str).replaceAll(/\s/g, ""));
     if (!m) return null;
-    const n = parseFloat(m[0].replace(/\./g, "").replace(",", "."));
+    const n = Number.parseFloat(m[0].replaceAll(".", "").replaceAll(",", "."));
     return Number.isNaN(n) ? null : n;
   }
 
@@ -171,12 +173,13 @@ const FundaScore = (() => {
   // tabel van Funda. Verandert Funda de labeltekst, dan blijft het veld leeg
   // en meldt het paneel welke metrieken ontbreken.
 
-  const norm = (s) =>
-    typeof FundaCommon !== "undefined"
-      ? FundaCommon.normaliseer(s)
-      : String(s === null || s === undefined ? "" : s).replace(/\s+/g, " ").trim();
+  function norm(s) {
+    if (typeof FundaCommon !== "undefined") return FundaCommon.normaliseer(s);
+    const tekst = s === null || s === undefined ? "" : String(s);
+    return tekst.replaceAll(/\s+/g, " ").trim();
+  }
 
-  const isKopregel = (regel) => SECTIE_KOPPEN.includes(norm(regel));
+  const isKopregel = (regel) => SECTIE_KOPPEN.has(norm(regel));
 
   function textLines(root) {
     const raw = (root || document.body).innerText || "";
@@ -186,15 +189,14 @@ const FundaScore = (() => {
   // Pakt de waarde achter een label. Heeft de rij geen waarde, dan volgt de
   // volgende kopregel direct: die wordt geweigerd in plaats van als waarde
   // door te gaan.
-  function afterLabel(lines, label, offset) {
-    const skip = offset || 0;
+  function afterLabel(lines, label, offset = 0) {
     const doel = norm(label);
     for (let i = 0; i < lines.length; i++) {
       if (lines[i] !== doel) continue;
       let seen = 0;
       for (let j = i + 1; j < Math.min(lines.length, i + 8); j++) {
         if (lines[j] === "") continue;
-        if (seen === skip) return isKopregel(lines[j]) ? null : lines[j];
+        if (seen === offset) return isKopregel(lines[j]) ? null : lines[j];
         seen++;
       }
     }
@@ -219,15 +221,22 @@ const FundaScore = (() => {
     return null;
   }
 
+  // "Huis te koop: Nijhoffstraat 3 6821 BG Arnhem | Funda" -> het adres. Bewust
+  // zonder regex: die gaf backtracking bij het opsplitsen op de pijp.
+  function adresUitTitel(titel) {
+    const zonderPrefix = titel.includes(":") ? titel.slice(titel.indexOf(":") + 1) : titel;
+    const delen = zonderPrefix
+      .split("|")
+      .map((deel) => deel.trim())
+      .filter(Boolean);
+    return (delen.find((deel) => deel.toLowerCase() !== "funda") || "").trim();
+  }
+
   function parseTitleAddress() {
-    // Eerst de og:title-meta, dan de paginatitel
-    // ("Huis te koop: Nijhoffstraat 3 6821 BG Arnhem | Funda").
+    // Eerst de og:title-meta, dan de paginatitel.
     const og = document.querySelector('meta[property="og:title"]');
-    for (const ruw of [og && og.getAttribute("content"), document.title]) {
-      const t = norm(ruw);
-      if (!t) continue;
-      const m = t.match(/^[^:]*:\s*(.+?)\s*\|\s*/) || t.match(/^[^:]*:\s*(.+)$/);
-      const adres = norm(m ? m[1] : t.replace(/\|\s*Funda\s*$/, ""));
+    for (const ruw of [og?.getAttribute("content"), document.title]) {
+      const adres = norm(adresUitTitel(norm(ruw)));
       if (adres) return adres;
     }
     return "";
@@ -261,11 +270,25 @@ const FundaScore = (() => {
   // Alleen echte labels accepteren, zodat een kopregel er niet als
   // energielabel in komt. Funda's API schrijft de klasse met het aantal plussen
   // als cijfer ("A3"), de pagina zelf schrijft "A+++" — die twee gelijktrekken.
+  const ENERGIE_RE = /^(?:A\+*|B|C|D|E|F|G)$/;
+  const ENERGIE_CIJFER_RE = /^A([1-4])$/;
+  const JAARTAL_RE = /(?:19|20)\d{2}/;
+
+  // "5 kamers (4 slaapkamers)" -> 4; "2 kamers" -> null. Het totaal aantal
+  // kamers is niet het aantal slaapkamers, dus zonder het woord blijven we
+  // onbekend.
+  function aantalSlaapkamers(kamersRaw) {
+    const delen = kamersRaw.split("slaapkamer");
+    if (delen.length < 2) return null;
+    const getallen = delen[0].match(/\d+/g);
+    return getallen ? Number.parseInt(getallen.at(-1), 10) : null;
+  }
+
   function energieLabel(waarde) {
     if (!waarde) return null;
-    const t = norm(waarde).toUpperCase().replace(/\s/g, "");
-    if (/^(A\+*|B|C|D|E|F|G)$/.test(t)) return t;
-    const m = t.match(/^A([1-4])$/);
+    const t = norm(waarde).toUpperCase().replaceAll(/\s/g, "");
+    if (ENERGIE_RE.test(t)) return t;
+    const m = ENERGIE_CIJFER_RE.exec(t);
     return m ? "A" + "+".repeat(Number(m[1])) : null;
   }
 
@@ -290,19 +313,13 @@ const FundaScore = (() => {
     const get = (label, offset) => afterLabel(lines, label, offset);
 
     const kamersRaw = get("Aantal kamers");
-    let slaapkamers = null;
-    if (kamersRaw) {
-      // "5 kamers (4 slaapkamers)" wel, "2 kamers" niet: het totaal aantal
-      // kamers is niet het aantal slaapkamers, dus dan blijft het onbekend.
-      const m = kamersRaw.match(/(\d+)\s*slaapkamer/);
-      if (m) slaapkamers = parseInt(m[1], 10);
-    }
+    const slaapkamers = kamersRaw ? aantalSlaapkamers(kamersRaw) : null;
 
-    const ketelRaw = afterLabelMatching(lines, "Cv-ketel", /(19|20)\d{2}/);
+    const ketelRaw = afterLabelMatching(lines, "Cv-ketel", JAARTAL_RE);
     let ketelJaar = null;
     if (ketelRaw) {
-      const m = ketelRaw.match(/(19|20)\d{2}/);
-      if (m) ketelJaar = parseInt(m[0], 10);
+      const m = JAARTAL_RE.exec(ketelRaw);
+      if (m) ketelJaar = Number.parseInt(m[0], 10);
     }
 
     // Alle tuinvelden optellen: Funda splitst voor-, achter- en zijtuin.
@@ -364,26 +381,32 @@ const FundaScore = (() => {
   let bridgeBasis = null; // gevonden basis-url, daarna hergebruikt
   let bridgeBezig = null; // lopende zoekactie
 
+  // Opslaan van de gevonden poort is een optimalisatie: mislukt het, dan zoekt
+  // de volgende pagina hem gewoon opnieuw. Daarom geen foutafhandeling.
   async function bridgeOnthouden(poort) {
     try {
       if (typeof FundaCommon !== "undefined") {
         await FundaCommon.schrijf({ [BRIDGE_POORT_KEY]: poort });
-      } else if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      } else if (typeof chrome !== "undefined" && chrome.storage?.local) {
         await chrome.storage.local.set({ [BRIDGE_POORT_KEY]: poort });
       }
-    } catch (e) { }
+    } catch {
+      /* poort niet onthouden: onschadelijk */
+    }
   }
 
   // Let op: een vreemde server op dezelfde poort antwoordt ook, maar zonder
   // "ok": true. Daarom op dat veld controleren en niet alleen op HTTP 200.
+  // Een poort die niet antwoordt is normaal (de brug draait vaak niet), dus
+  // geen fout maar null: dan wordt de volgende poort geprobeerd.
   async function bridgeProbeer(poort) {
     const basis = `http://127.0.0.1:${poort}`;
     try {
       const res = await fetch(`${basis}/health`, { cache: "no-store" });
       if (!res.ok) return null;
       const data = await res.json();
-      return data && data.ok === true ? basis : null;
-    } catch (e) {
+      return data?.ok === true ? basis : null;
+    } catch {
       return null;
     }
   }
@@ -402,11 +425,13 @@ const FundaScore = (() => {
         let poort = null;
         if (typeof FundaCommon !== "undefined") {
           poort = (await FundaCommon.lees(BRIDGE_POORT_KEY))[BRIDGE_POORT_KEY];
-        } else if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+        } else if (typeof chrome !== "undefined" && chrome.storage?.local) {
           poort = (await chrome.storage.local.get(BRIDGE_POORT_KEY))[BRIDGE_POORT_KEY];
         }
         if (poort) voorkeur = `http://127.0.0.1:${poort}`;
-      } catch (e) { }
+      } catch {
+        /* geen opgeslagen poort: met de default verder */
+      }
 
       const orde = [voorkeur].concat(
         BRIDGE_POORTS.map((p) => `http://127.0.0.1:${p}`).filter((u) => u !== voorkeur)
@@ -431,14 +456,15 @@ const FundaScore = (() => {
     }
   }
 
+  // De brug is optioneel: een fout betekent terugvallen op de paginatekst.
   async function fetchBridge(url) {
     const basis = await resolveBridgeUrl();
     try {
       const res = await fetch(`${basis}/listing?url=${encodeURIComponent(url)}`);
       if (!res.ok) return null;
       const data = await res.json();
-      return data && data.ok ? data : null;
-    } catch (e) {
+      return data?.ok ? data : null;
+    } catch {
       return null;
     }
   }
@@ -450,7 +476,8 @@ const FundaScore = (() => {
     try {
       const res = await fetch(`${basis}/adres?q=${encodeURIComponent(query)}`);
       return await res.json();
-    } catch (e) {
+    } catch {
+      // Netwerkfout wordt als melding aan de popup doorgegeven.
       return { ok: false, error: "brug niet bereikbaar op " + basis };
     }
   }
@@ -469,7 +496,7 @@ const FundaScore = (() => {
     "woningtype"
   ];
 
-  const BRIDGE_NUMERIEK = [
+  const BRIDGE_NUMERIEK = new Set([
     "prijs",
     "prijsPerM2",
     "buurtPrijsPerM2",
@@ -478,28 +505,31 @@ const FundaScore = (() => {
     "inhoud",
     "slaapkamers",
     "bouwjaar"
-  ];
+  ]);
 
-  function mergeBridge(huis, data) {
-    if (!data) return huis;
-    const out = Object.assign({}, huis);
+  // Eén veld overnemen, met controle op waarden die we niet kunnen lezen.
+  function neemVeldOver(out, veld, waarde) {
+    if (veld === "energielabel") {
+      const label = energieLabel(waarde);
+      if (label) out[veld] = label;
+      return;
+    }
+    if (BRIDGE_NUMERIEK.has(veld)) {
+      const n = typeof waarde === "number" ? waarde : parseNumber(waarde);
+      if (n !== null) out[veld] = n;
+      return;
+    }
+    out[veld] = waarde;
+  }
+
+  function neemVeldenOver(out, data) {
     for (const veld of BRIDGE_VELDEN) {
       const v = data[veld];
-      if (v === null || v === undefined) continue;
-      // Een waarde die we niet kunnen lezen mag de goede paginatekst niet
-      // overschrijven; anders komt er bijvoorbeeld "A3" of "onbekend" in.
-      if (veld === "energielabel") {
-        const label = energieLabel(v);
-        if (label) out[veld] = label;
-        continue;
-      }
-      if (BRIDGE_NUMERIEK.includes(veld)) {
-        const n = typeof v === "number" ? v : parseNumber(v);
-        if (n !== null) out[veld] = n;
-        continue;
-      }
-      out[veld] = v;
+      if (v !== null && v !== undefined) neemVeldOver(out, veld, v);
     }
+  }
+
+  function neemMetaOver(out, data) {
     if (data.status) out.status = data.status === "available" ? "Beschikbaar" : data.status;
     if (data.adres) out.adres = data.adres;
     out.buurt = data.buurt || null;
@@ -509,12 +539,21 @@ const FundaScore = (() => {
     out.publicatiedatum = data.publicatiedatum || null;
     out.prijsHistorie = data.prijsHistorie || [];
     out.bridge = true;
+  }
 
-    const dalingen = out.prijsHistorie.filter((c) => /verlaag|lower|decrease/i.test(c.status || ""));
-    out.prijsDalingen = dalingen.length;
-    const eerste = out.prijsHistorie[out.prijsHistorie.length - 1];
-    out.eerstePrijs = eerste && eerste.prijs ? eerste.prijs : null;
+  function neemHistorieOver(out) {
+    out.prijsDalingen = out.prijsHistorie.filter((c) =>
+      /verlaag|lower|decrease/i.test(c.status || "")
+    ).length;
+    out.eerstePrijs = out.prijsHistorie.at(-1)?.prijs ?? null;
+  }
 
+  function mergeBridge(huis, data) {
+    if (!data) return huis;
+    const out = { ...huis };
+    neemVeldenOver(out, data);
+    neemMetaOver(out, data);
+    neemHistorieOver(out);
     mergeKenmerken(out, data);
     return out;
   }
@@ -526,8 +565,8 @@ const FundaScore = (() => {
     const k = data.kenmerken || {};
     const orde = secties.concat(Object.keys(k).filter((n) => !secties.includes(n)));
     for (const naam of orde) {
-      const sec = k[naam];
-      if (sec && sec[label] !== undefined && sec[label] !== null) return sec[label];
+      const waarde = k[naam]?.[label];
+      if (waarde !== undefined && waarde !== null) return waarde;
     }
     return null;
   }
@@ -541,8 +580,8 @@ const FundaScore = (() => {
     const ketel = kenmerk(data, ["Indeling", "Energie"], "Cv-ketel");
     if (ketel) {
       out.ketelRaw = ketel;
-      const m = String(ketel).match(/(19|20)\d{2}/);
-      if (m) out.ketelJaar = parseInt(m[0], 10);
+      const m = JAARTAL_RE.exec(String(ketel));
+      if (m) out.ketelJaar = Number.parseInt(m[0], 10);
     }
 
     const ligging = kenmerk(data, ["Buitenruimte"], "Ligging");
@@ -589,7 +628,7 @@ const FundaScore = (() => {
 
   function energyScore(label) {
     if (!label) return null;
-    const clean = label.trim().toUpperCase().replace(/\s/g, "");
+    const clean = label.trim().toUpperCase().replaceAll(/\s/g, "");
     const s = ENERGY_SCORES[clean];
     return s === undefined ? null : s;
   }
@@ -632,56 +671,64 @@ const FundaScore = (() => {
     return scale(h.woonopp, band[0], band[1]);
   }
 
-  function metricScores(h, ref) {
-    const nu = new Date().getFullYear();
-    const r = ref || null;
-
-    // Met referentie telt de vraagprijs zelf: goedkoop t.o.v. het aanbod = hoog.
-    let prijsScore = null;
+  // Prijs: met referentie het percentiel daarbinnen, anders de verhouding tot
+  // het buurtgemiddelde, anders de absolute prijs per m².
+  function prijsScoreVan(h, r) {
     if (r) {
       const p = percentiel(r.ladders.prijs, h.prijs);
-      prijsScore = p === null ? null : (1 - p) * 10;
-    } else if (h.prijsPerM2 && h.buurtPrijsPerM2) {
-      prijsScore = scale(h.prijsPerM2 / h.buurtPrijsPerM2, 1.4, 0.8);
-    } else if (h.prijsPerM2) {
-      prijsScore = scale(h.prijsPerM2, 7000, 2000);
+      return p === null ? null : (1 - p) * 10;
     }
+    if (h.prijsPerM2 && h.buurtPrijsPerM2) return scale(h.prijsPerM2 / h.buurtPrijsPerM2, 1.4, 0.8);
+    if (h.prijsPerM2) return scale(h.prijsPerM2, 7000, 2000);
+    return null;
+  }
 
-    // Onbekende tekst wordt niet als "gemiddeld" gescoord: dan is de ligging
-    // simpelweg niet te beoordelen.
-    let liggingScore = null;
-    if (h.liggingRaw) {
-      const l = String(h.liggingRaw).toLowerCase();
-      if (/drukke weg/.test(l)) liggingScore = 1;
-      else if (/rustige weg/.test(l)) liggingScore = 9;
-      else if (/woonwijk|beschutte/.test(l)) liggingScore = 6;
-      else if (/vrij uitzicht|bosrand|water/.test(l)) liggingScore = 7;
-      if (liggingScore !== null && /vrij uitzicht|bosrand|water/.test(l))
-        liggingScore = clamp(liggingScore + 1, 0, 10);
-    }
+  // Onbekende tekst wordt niet als "gemiddeld" gescoord: dan is de ligging
+  // simpelweg niet te beoordelen.
+  function liggingScoreVan(h) {
+    if (!h.liggingRaw) return null;
+    const l = String(h.liggingRaw).toLowerCase();
+    const plus = /vrij uitzicht|bosrand|water/.test(l) ? 1 : 0;
+    if (/drukke weg/.test(l)) return clamp(1 + plus, 0, 10);
+    if (/rustige weg/.test(l)) return clamp(9 + plus, 0, 10);
+    if (/woonwijk|beschutte/.test(l)) return clamp(6 + plus, 0, 10);
+    return plus ? 8 : null;
+  }
 
-    // Een ontbrekend veld betekent onbekend, niet "geen".
-    let bergingScore = null;
-    if (h.bergingRaw) bergingScore = /geen/i.test(h.bergingRaw) ? 0 : 10;
+  // Een ontbrekend veld betekent onbekend, niet "geen".
+  function bergingScoreVan(h) {
+    if (!h.bergingRaw) return null;
+    return /geen/i.test(h.bergingRaw) ? 0 : 10;
+  }
 
-    let tuinScore = null;
-    if (h.tuinM2 > 0) tuinScore = scale(h.tuinM2, 0, 60);
-    else if (h.tuinAanwezig) tuinScore = 5; // tuin vermeld, maat onbekend
+  function tuinScoreVan(h) {
+    if (h.tuinM2 > 0) return scale(h.tuinM2, 0, 60);
+    return h.tuinAanwezig ? 5 : null; // tuin vermeld, maat onbekend
+  }
 
+  function slaapkamerScoreVan(h, r) {
+    if (r?.ladders?.slaapkamers)
+      return maalTien(percentiel(r.ladders.slaapkamers, h.slaapkamers));
+    return scale(h.slaapkamers, 1, 4);
+  }
+
+  function ketelScoreVan(h, nu) {
+    if (h.ketelJaar === null || h.ketelJaar === undefined) return null;
+    return scale(nu - h.ketelJaar, 18, 2);
+  }
+
+  function metricScores(h, ref = null) {
     return {
-      prijsVsBuurt: prijsScore,
+      prijsVsBuurt: prijsScoreVan(h, ref),
       energie: energyScore(h.energielabel),
-      woonopp: woonoppScore(h, r),
-      slaapkamers:
-        r && r.ladders.slaapkamers
-          ? maalTien(percentiel(r.ladders.slaapkamers, h.slaapkamers))
-          : scale(h.slaapkamers, 1, 4),
-      buitenruimte: tuinScore,
+      woonopp: woonoppScore(h, ref),
+      slaapkamers: slaapkamerScoreVan(h, ref),
+      buitenruimte: tuinScoreVan(h),
       klus: klusScore(h),
       bouwjaar: scale(h.bouwjaar, 1900, 2000),
-      berging: bergingScore,
-      ligging: liggingScore,
-      ketel: h.ketelJaar === null || h.ketelJaar === undefined ? null : scale(nu - h.ketelJaar, 18, 2),
+      berging: bergingScoreVan(h),
+      ligging: liggingScoreVan(h),
+      ketel: ketelScoreVan(h, new Date().getFullYear()),
       isolatie: isolatieScore(h.isolatieRaw),
       perceel: scale(h.perceel, 15, 200)
     };
@@ -710,43 +757,45 @@ const FundaScore = (() => {
   }
 
   function ruweScore(h, weights, ref) {
-    const w = Object.assign({}, DEFAULT_WEIGHTS, weights || {});
+    const w = { ...DEFAULT_WEIGHTS, ...weights };
     const { som, gewicht } = telOp(metricScores(h, ref), w);
     return gewicht > 0 ? som / gewicht : null;
   }
 
-  function totalScore(h, weights, ref) {
-    const w = Object.assign({}, DEFAULT_WEIGHTS, weights || {});
-    const r = ref || null;
-    const m = metricScores(h, r);
-    const { som, gewicht, totaalGewicht, ontbreekt } = telOp(m, w);
+  function notitiesVoor(h, r) {
     const notities = [];
-
+    const tuinM2 = h.tuinM2 || 0;
     if (!r) {
       notities.push("Geen referentieaanbod: percentielscores uit.");
-      if (h.woonopp)
-        notities.push("Woonoppervlak op vaste schaal voor dit woningtype.");
+      if (h.woonopp) notities.push("Woonoppervlak op vaste schaal voor dit woningtype.");
+      if (h.prijsPerM2 && !h.buurtPrijsPerM2)
+        notities.push("Geen buurtgemiddelde: prijs/m² op absolute schaal gescoord.");
     }
-    if (!r && h.prijsPerM2 && !h.buurtPrijsPerM2)
-      notities.push("Geen buurtgemiddelde: prijs/m² op absolute schaal gescoord.");
-    if (h.tuinAanwezig && !(h.tuinM2 > 0))
+    if (h.tuinAanwezig && tuinM2 <= 0)
       notities.push("Tuin vermeld zonder oppervlak: als middenscore gerekend.");
+    return notities;
+  }
+
+  function totalScore(h, weights, ref = null) {
+    const w = { ...DEFAULT_WEIGHTS, ...weights };
+    const m = metricScores(h, ref);
+    const { som, gewicht, totaalGewicht, ontbreekt } = telOp(m, w);
 
     // De score telt alleen de metrieken die er zijn. Zonder volledige dekking
     // zijn scores onderling niet goed vergelijkbaar, dus dat wordt gemeld.
     const dekking = totaalGewicht > 0 ? gewicht / totaalGewicht : 0;
 
     let score = gewicht > 0 ? som / gewicht : null;
-    if (score !== null && r && r.scores) score = cijfer(percentiel(r.scores, score));
+    if (score !== null && ref?.scores) score = cijfer(percentiel(ref.scores, score));
     const waarde = score !== null && h.prijs ? score / (h.prijs / 100000) : null;
 
-    return { score, waarde, metrics: m, ontbreekt, notities, dekking };
+    return { score, waarde, metrics: m, ontbreekt, notities: notitiesVoor(h, ref), dekking };
   }
 
   // ---------- breekpunten ----------
 
   function breekpunten(h, filters) {
-    const f = Object.assign({}, DEFAULT_FILTERS, filters || {});
+    const f = { ...DEFAULT_FILTERS, ...filters };
     const uit = [];
     if (h.status && !/beschikbaar/i.test(h.status)) uit.push(h.status.toLowerCase());
     if (f.minSlaapkamers > 0 && h.slaapkamers !== null && h.slaapkamers < f.minSlaapkamers)

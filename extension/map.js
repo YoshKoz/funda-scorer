@@ -22,7 +22,7 @@
 
   function areaSlug() {
     const raw = new URLSearchParams(location.search).get("selected_area") || "";
-    const first = raw.replace(/[[\]"]/g, "").split(",")[0].trim().toLowerCase();
+    const first = raw.replaceAll(/[[\]"]/g, "").split(",")[0].trim().toLowerCase();
     return /^[a-z0-9-]{2,60}$/.test(first) ? first : null;
   }
 
@@ -66,10 +66,11 @@
       );
       if (!res.ok) return null;
       data = await res.json();
-    } catch (e) {
+    } catch {
+      // Geen brug of geen antwoord: dan blijft het bij wat de pagina zelf zegt.
       return null;
     }
-    if (!data || !data.ok) return null;
+    if (!data?.ok) return null;
 
     const map = {};
     for (const item of data.listings) map[item.id] = item;
@@ -100,14 +101,16 @@
   }
 
   async function gewichten() {
-    if (!FundaCommon.api.runtime || !FundaCommon.api.runtime.id) {
+    // Na een extensie-reload is de context dood; dan stopt de kaartlaag.
+    if (!FundaCommon.api.runtime?.id) {
       dood = true;
       return null;
     }
     try {
       const weights = await FundaCommon.Store.weights();
-      return Object.assign({}, FundaScore.DEFAULT_WEIGHTS, weights);
-    } catch (e) {
+      return { ...FundaScore.DEFAULT_WEIGHTS, ...weights };
+    } catch {
+      // Opslag onbereikbaar (context weg): kaartlaag uitzetten.
       dood = true;
       return null;
     }
@@ -134,7 +137,7 @@
     for (const cell of cells) {
       const scores = [];
       for (const id of cell.ids) {
-        const huis = listings && listings[id];
+        const huis = listings?.[id];
         if (!huis) continue;
         const res = FundaScore.totalScore(huis, weights, ref);
         if (res.score !== null) scores.push(res.score);
@@ -153,6 +156,37 @@
     window.postMessage({ source: MSG_STATUS, tekst, bezig: bezigNu }, location.origin);
   }
 
+  // Welke id's op de kaart staan we nog niet hebben; de brug haalt per woning
+  // detail op, dus alleen wat ontbreekt.
+  function ontbrekendeIds(cells) {
+    const gezien = new Set();
+    const ids = [];
+    for (const cell of cells) {
+      for (const id of cell.ids) {
+        if (listings[id] || gezien.has(id)) continue;
+        gezien.add(id);
+        ids.push(id);
+      }
+    }
+    return ids;
+  }
+
+  // Haalt één batch op. False betekent: brug onbereikbaar.
+  async function haalBatch(deel) {
+    try {
+      const basis = await FundaScore.resolveBridgeUrl();
+      const res = await fetch(`${basis}/listings?ids=${deel.join(",")}`);
+      const data = res.ok ? await res.json() : null;
+      if (!data?.ok) return false;
+      for (const item of data.listings) listings[item.id] = item;
+      refVies = true;
+      return true;
+    } catch {
+      // Netwerkfout: de aanroeper meldt "Brug onbereikbaar".
+      return false;
+    }
+  }
+
   // Knop: haalt de woningen op die nu op de kaart staan, per id. Werkt dus ook
   // als er geen gebied is gekozen (heel Nederland).
   async function laadZichtbaar(cells) {
@@ -163,17 +197,7 @@
       if (!weights) return;
       if (!listings) listings = {};
 
-      // Set in plaats van ids.includes(): dat was O(n²) en bij een heel land
-      // zonder gebiedsfilter liep dat in de duizenden ids.
-      const gezien = new Set();
-      const ids = [];
-      for (const cell of cells) {
-        for (const id of cell.ids) {
-          if (listings[id] || gezien.has(id)) continue;
-          gezien.add(id);
-          ids.push(id);
-        }
-      }
+      const ids = ontbrekendeIds(cells);
       if (!ids.length) {
         status("Laad huizen", false);
         stuurKleuren(cells, weights);
@@ -183,20 +207,10 @@
       for (let i = 0; i < ids.length; i += BATCH) {
         const deel = ids.slice(i, i + BATCH);
         status(`Laden ${Math.min(i + deel.length, ids.length)}/${ids.length}`, true);
-        let data;
-        try {
-          const basis = await FundaScore.resolveBridgeUrl();
-          const res = await fetch(`${basis}/listings?ids=${deel.join(",")}`);
-          data = res.ok ? await res.json() : null;
-        } catch (e) {
-          data = null;
-        }
-        if (!data || !data.ok) {
+        if (!(await haalBatch(deel))) {
           status("Brug onbereikbaar", false);
           return;
         }
-        for (const item of data.listings) listings[item.id] = item;
-        refVies = true;
         stuurKleuren(cells, weights);
       }
 
@@ -207,7 +221,7 @@
   }
 
   window.addEventListener("message", (event) => {
-    if (event.source !== window) return;
+    if (event.source !== window || event.origin !== location.origin) return;
     const data = event.data;
     if (!data || !Array.isArray(data.cells)) return;
     if (data.source === MSG_LOAD) {
