@@ -1,0 +1,3 @@
+# Een LICENSE bevat licentietekst, geen markdown. MD041 ("de eerste regel
+# hoort een H1 te zijn") slaat er daardoor onterecht op aan.
+LICENSE

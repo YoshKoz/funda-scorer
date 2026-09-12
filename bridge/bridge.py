@@ -457,7 +457,9 @@ def main() -> None:
     print(f"funda-bridge on http://{HOST}:{PORT}")
     print("  /listing?url=...  /area?area=...  /adres?q=...  /health")
     try:
-        server.serve_forever()
+        # Alleen loopback, en de extensie mag van Chrome uitsluitend
+        # http://127.0.0.1 benaderen. TLS zou hier niets toevoegen.
+        server.serve_forever()  # NOSONAR
     except KeyboardInterrupt:
         pass
     finally:
