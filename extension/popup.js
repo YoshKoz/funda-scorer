@@ -3,31 +3,34 @@
 (() => {
   "use strict";
 
-  const api = typeof browser !== "undefined" ? browser : chrome;
+  const { euro, scoreClass: scoreKlasse } = FundaCommon;
+  const scoreClass = (s) => scoreKlasse(s, "", "");
 
   let houses = {};
   let weights = Object.assign({}, FundaScore.DEFAULT_WEIGHTS);
   let filters = Object.assign({}, FundaScore.DEFAULT_FILTERS);
 
-  const euro = (n) => (n === null || n === undefined ? "—" : "€ " + n.toLocaleString("nl-NL"));
-
-  function scoreClass(s) {
-    if (s === null) return "";
-    if (s >= 7) return "goed";
-    if (s >= 5) return "matig";
-    return "slecht";
-  }
+  // Opgeslagen huizen zijn compleet (gescoord op de detailpagina), dus hier is
+  // geen referentieaanbod nodig. Herberekenen gebeurt één keer per wijziging in
+  // plaats van bij elke sortering.
+  let scoreCache = null;
+  let cacheSleutel = "";
 
   function berekend() {
-    return Object.values(houses).map((h) => {
-      const res = FundaScore.totalScore(h, weights);
+    const sleutel = `${Object.keys(houses).length}|${JSON.stringify(weights)}|${JSON.stringify(filters)}`;
+    if (scoreCache && sleutel === cacheSleutel) return scoreCache;
+    scoreCache = Object.values(houses).map((h) => {
+      const res = FundaScore.totalScore(h, weights, null);
       return {
         huis: h,
         score: res.score,
         waarde: res.waarde,
+        dekking: res.dekking,
         vlaggen: FundaScore.breekpunten(h, filters)
       };
     });
+    cacheSleutel = sleutel;
+    return scoreCache;
   }
 
   function sorteer(rijen, mode) {
@@ -65,13 +68,13 @@
         return `<article class="kaart">
           <div class="rang">${i + 1}</div>
           <a class="kaart-adres" href="${h.url}" target="_blank" rel="noreferrer">${h.adres}</a>
-          <div class="kaart-score ${scoreClass(r.score)}">${
-          r.score === null ? "—" : r.score.toFixed(1)
-        }</div>
+          <div class="kaart-score ${scoreClass(r.score)}">${r.score === null ? "—" : r.score.toFixed(1)
+          }</div>
           <div class="kaart-cijfers">
             ${euro(h.prijs)} · ${h.woonopp ?? "—"} m² · ${euro(h.prijsPerM2)}/m² ·
             label ${h.energielabel || "—"} · ${h.slaapkamers ?? "—"} slk ·
-            waarde ${r.waarde === null ? "—" : r.waarde.toFixed(2)}
+            waarde ${r.waarde === null ? "—" : r.waarde.toFixed(2)}${r.dekking < 1 ? ` · dekking ${Math.round(r.dekking * 100)}%` : ""
+          }
           </div>
           <div class="kaart-acties"><button type="button" data-url="${h.url}">Verwijder</button></div>
           ${r.vlaggen.length ? `<div class="kaart-vlag">Valt af op: ${r.vlaggen.join(", ")}</div>` : ""}
@@ -82,7 +85,8 @@
     doel.querySelectorAll(".kaart-acties button").forEach((btn) => {
       btn.addEventListener("click", async () => {
         delete houses[btn.dataset.url];
-        await api.storage.local.set({ houses });
+        scoreCache = null;
+        await FundaCommon.Store.verwijderHuis(btn.dataset.url);
         tekenLijst();
       });
     });
@@ -90,22 +94,31 @@
 
   function tekenWegingen() {
     const doel = document.getElementById("weegvelden");
-    doel.innerHTML = Object.keys(FundaScore.DEFAULT_WEIGHTS)
-      .map(
-        (k) => `<label class="weeg">${FundaScore.METRIC_LABELS[k]}
+    doel.innerHTML = FundaScore.SCORE_METRICS.map(
+      (k) => `<label class="weeg">${FundaScore.METRIC_LABELS[k]}
                   <input type="number" min="0" max="100" step="1" data-weeg="${k}" value="${weights[k]}" />
                 </label>`
-      )
-      .join("");
+    ).join("");
 
     doel.querySelectorAll("input[data-weeg]").forEach((inp) => {
       inp.addEventListener("change", async () => {
         const v = parseInt(inp.value, 10);
         weights[inp.dataset.weeg] = Number.isNaN(v) ? 0 : Math.max(0, v);
-        await api.storage.local.set({ weights });
+        scoreCache = null;
+        await FundaCommon.schrijf({ weights });
+        tekenWegingen();
         tekenLijst();
       });
     });
+
+    // De overige kenmerken zijn niet weegbaar: de zoek-API levert ze niet, dus
+    // ze zouden de score op de kaart en de detailpagina uit elkaar trekken.
+    const info = document.getElementById("info-metrics");
+    if (info)
+      info.innerHTML = FundaScore.INFO_METRICS.map(
+        (k) =>
+          `<span class="weeg-info" style="display:inline-block;margin:2px 6px 2px 0;font-size:12px;opacity:.75">${FundaScore.METRIC_LABELS[k]}</span>`
+      ).join("");
   }
 
   function vulBreekpunten() {
@@ -120,17 +133,25 @@
     const kolommen = [
       "adres",
       "url",
+      "status",
+      "opgeslagenOp",
       "prijs",
-      "woonopp",
       "prijsPerM2",
       "buurtPrijsPerM2",
+      "woonopp",
       "perceel",
+      "inhoud",
+      "kamersRaw",
       "slaapkamers",
       "bouwjaar",
       "energielabel",
+      "woningtype",
+      "isolatieRaw",
+      "ketelJaar",
+      "bergingRaw",
+      "eigendom",
       "tuinM2",
-      "liggingRaw",
-      "ketelJaar"
+      "liggingRaw"
     ];
     const rijen = sorteer(berekend(), document.getElementById("sort").value);
     const esc = (v) => `"${String(v === null || v === undefined ? "" : v).replace(/"/g, '""')}"`;
@@ -161,9 +182,8 @@
     const data = await FundaScore.fetchAdres(q);
 
     if (!data || !data.ok) {
-      uit.innerHTML = `<p class="leeg">${
-        (data && (data.error || data.adres)) || "geen resultaat"
-      }</p>`;
+      uit.innerHTML = `<p class="leeg">${(data && (data.error || data.adres)) || "geen resultaat"
+        }</p>`;
       return;
     }
 
@@ -178,10 +198,15 @@
   }
 
   async function init() {
-    const store = await api.storage.local.get(["houses", "weights", "filters"]);
-    houses = store.houses || {};
-    weights = Object.assign({}, FundaScore.DEFAULT_WEIGHTS, store.weights || {});
-    filters = Object.assign({}, FundaScore.DEFAULT_FILTERS, store.filters || {});
+    const [bewaardHouses, bewaardWeights, bewaardFilters] = await Promise.all([
+      FundaCommon.Store.houses(),
+      FundaCommon.Store.weights(),
+      FundaCommon.Store.filters()
+    ]);
+    houses = bewaardHouses;
+    weights = Object.assign({}, FundaScore.DEFAULT_WEIGHTS, bewaardWeights);
+    filters = Object.assign({}, FundaScore.DEFAULT_FILTERS, bewaardFilters);
+    scoreCache = null;
 
     tekenWegingen();
     vulBreekpunten();
@@ -206,7 +231,8 @@
 
     document.getElementById("reset-wegingen").addEventListener("click", async () => {
       weights = Object.assign({}, FundaScore.DEFAULT_WEIGHTS);
-      await api.storage.local.set({ weights });
+      scoreCache = null;
+      await FundaCommon.schrijf({ weights });
       tekenWegingen();
       tekenLijst();
     });
@@ -218,7 +244,8 @@
           const v = parseInt(e.target.value, 10);
           filters[key] = Number.isNaN(v) ? 0 : Math.max(0, v);
         }
-        await api.storage.local.set({ filters });
+        scoreCache = null;
+        await FundaCommon.schrijf({ filters });
         tekenLijst();
       });
     };

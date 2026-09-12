@@ -90,19 +90,67 @@ wél respecteert.
 
 ## Testen
 
-```bash
-./tests/smoke.sh 8767                 # brug + echte woning
-./tests/extension-live.cjs            # extensie in Chromium op een echte Funda-pagina
-REQUIRE_BRIDGE=1 ./tests/extension-live.cjs
-SCREENSHOT=/tmp/paneel.png ./tests/extension-live.cjs
-```
-
-Voor `extension-live.cjs` is Playwright nodig. Zonder installatie kun je de
-kopie uit de npx-cache gebruiken:
+Alles behalve `extension-live.cjs` draait headless: er gaat geen browservenster
+open en er is geen verbinding met funda.nl nodig.
 
 ```bash
-NODE_PATH="$HOME/.npm/_npx/9833c18b2d85bc59/node_modules" node tests/extension-live.cjs
+node tests/scoring.test.cjs            # pure scorelogica, geen browser of netwerk
+./tests/smoke.sh 8767                  # brug tegen een echte woning
+node tests/parse-fixtures.cjs          # parser op bewaarde Funda-pagina's
+node tests/extension-offline.cjs       # extensie + paneel + brug, headless
+node tests/extension-offline.cjs huis.html
+REQUIRE_BRIDGE=1 node tests/extension-offline.cjs
+SCREENSHOT=/tmp/paneel.png node tests/extension-offline.cjs
 ```
+
+`extension-offline.cjs` onderschept de navigatie naar `www.funda.nl` en bedient
+die uit `tests/fixtures`, zodat de content script wél matcht maar er niets over
+het netwerk gaat. Alleen de brug op `127.0.0.1` wordt echt aangeroepen. Die
+browser krijgt `--disable-features=LocalNetworkAccessChecks`: Chrome ziet een
+geserveerde pagina als "publiek" en weigert anders de fetch naar loopback. Op
+een echte funda.nl-pagina speelt dat niet.
+
+`capture-fixtures.cjs` haalt eenmalig echte detailpagina's op naar
+`tests/fixtures/` (staat in `.gitignore`, het is third-party HTML):
+
+```bash
+node tests/capture-fixtures.cjs
+```
+
+`extension-live.cjs` test tegen de echte site en opent wél een venster: headless
+krijgt Funda's botbeveiliging te zien. Gebruik hem als canary:
+
+```bash
+REQUIRE_BRIDGE=1 node tests/extension-live.cjs
+```
+
+Voor de browsertests is Playwright nodig. Zonder installatie kun je de kopie uit
+de npx-cache gebruiken:
+
+```bash
+NODE_PATH="$HOME/.npm/_npx/9833c18b2d85bc59/node_modules" node tests/extension-offline.cjs
+```
+
+## Opbouw
+
+- **`extension/common.js`** — de enige plek waar `chrome`/`browser`, de opslag en
+  de opmaak geregeld worden. `Store` is de opslaglaag: naast `houses` beheert
+  hij een lichte `houseIndex`, zodat de detailpagina niet de hele ranglijst
+  hoeft te lezen om te weten of een huis al opgeslagen is.
+- **`extension/scoring.js`** — puur: `metricScores(huis, ref)` en
+  `totalScore(huis, weights, ref)` krijgen de referentie mee als argument. Er is
+  geen verborgen staat meer, dus dezelfde invoer geeft altijd dezelfde score en
+  de functies zijn los te testen (`tests/scoring.test.cjs`).
+- **`SCORE_METRICS` vs `INFO_METRICS`** — alleen de vier metrieken die de
+  zoek-API ook levert zijn weegbaar; daardoor is de score op de detailpagina
+  hetzelfde getal als de ring op de kaart. De andere acht kenmerken worden wel
+  getoond, maar tellen niet mee en zijn niet instelbaar.
+- **Ontbrekend is onbekend** — een veld dat niet op de pagina staat levert
+  `null` op en telt niet mee. `totalScore` geeft `dekking` terug: welk deel van
+  het gewicht echt meetelde. Onder de 100% meldt het paneel dat.
+- **Parser** — werkt op `body.innerText`. Een lege rij in de kenmerken-tabel
+  liet de volgende kopregel als waarde doorgaan; `afterLabel` weigert nu
+  kopregels. Labels worden genormaliseerd (non-breaking spaces, dubbele spaties).
 
 ## Bekende problemen
 
@@ -129,14 +177,50 @@ server antwoordt op dezelfde poort met een ander formaat.
 **Chrome negeert `--load-extension`** (zie boven). Playwright's Chromium werkt
 wel.
 
+**Kaartlaag blijft fragiel.** De marker-aggregaties komen uit Funda's interne
+Nuxt/Pinia-store. Een echte DOM-fallback is niet mogelijk: de markers staan op
+een deck.gl-canvas zonder DOM-coördinaten. De code leest nu wel meerdere paden
+en meldt op de knop "Kaartlaag: Funda-indeling onbekend" in plaats van stil
+niets te doen.
+
+**Energielabel uit de API heeft een andere notatie.** Funda's API schrijft `A3`
+waar de pagina `A+++` zet. `energieLabel()` trekt die gelijk, en waarden die niet
+te lezen zijn overschrijven de paginatekst niet meer.
+
+**Chrome's Local Network Access.** Een pagina op een publiek adres mag
+`127.0.0.1` alleen benaderen als de server dat toestaat. `bridge.py` stuurt
+daarom `Access-Control-Allow-Private-Network: true` mee.
+
+**Geen `icons` in het manifest.** Ontbreekt nog; Chrome toont een
+standaardpictogram.
+
 ## Verschil met de desktop-versie
 
-- `bridge/bridge.py`: poort komt uit `FUNDA_BRIDGE_PORT` in plaats van hardcoded 8765.
-- `extension/scoring.js` + `content.js`: `resolveBridgeUrl()` zoekt de poort,
-  onthoudt hem in `chrome.storage.local` en valt terug op DOM-only als de brug
-  uit staat. `BRIDGE_URL` blijft de default.
-- `extension/manifest.json`: `host_permissions` uitgebreid met poorten 8767-8770.
+De desktop-versie is 1.3.0, deze kopie 1.4.0.
 
-Verder is de code gelijk, inclusief de verouderde padverwijzing in de
-Claude-memory op de desktop (`C:\Development\funda-bridge`); het echte pad is
+- `bridge/bridge.py`: poort komt uit `FUNDA_BRIDGE_PORT` in plaats van hardcoded
+  8765; `Access-Control-Allow-Private-Network: true` in de CORS-headers (1.3.1).
+- `extension/common.js`: nieuw — gedeelde api/opslag/opmaak.
+- `extension/scoring.js`: referentie is een argument in plaats van verborgen
+  staat; ontbrekende velden scoren `null` in plaats van 0; `dekking` in het
+  resultaat; kopregel-beveiliging in de parser; één implementatie voor
+  tuinoppervlak in plaats van twee; `woonopp` zonder referentie gebruikt een band
+  per woningtype; energielabel uit de API (`A3`) wordt gelijkgetrokken met de
+  paginanotatie (`A+++`); `typeHint` leidt het woningtype uit url en titel af
+  omdat het label "Soort woonhuis" bij appartementen ontbreekt.
+- `extension/content.js` + `popup.js`: gebruiken `common.js`; de popup toont
+  alleen nog weegbare metrieken als invoerveld; opslaan gaat via `Store`.
+- `extension/map.js`: gebruikt `resolveBridgeUrl()` in plaats van de hardcoded
+  `BRIDGE_URL` (op deze machine staat de brug op 8767, dus de kaartlaag deed
+  hiervoor niets); `Set` in plaats van `ids.includes()`; het referentieaanbod
+  wordt één keer opgebouwd per set in plaats van bij elke kaartbeweging.
+- `extension/map-main.js`: leest de Pinia-store via meerdere paden en meldt het
+  als geen ervan werkt; volledige vingerafdruk van de cellen; pollen slaat over
+  als het tabblad verborgen is; stopt met zoeken naar de kaart na een minuut.
+- `extension/manifest.json`: `common.js` in de content scripts,
+  `unlimitedStorage`, en `browser_specific_settings` voor Firefox.
+  `world: "MAIN"` vereist Firefox ≥ 128.
+
+De verouderde padverwijzing in de Claude-memory op de desktop
+(`C:\Development\funda-bridge`) klopt nog steeds niet; het echte pad is
 `C:\Development\projects\web-scraping\funda-bridge`.

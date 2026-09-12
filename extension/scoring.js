@@ -6,20 +6,58 @@ const FundaScore = (() => {
 
   // ---------- standaardinstellingen ----------
 
+  // Alleen deze metrieken tellen mee voor de score. De zoek-API (en dus de
+  // ringen op de kaart) levert precies deze velden, zodat de score op de
+  // detailpagina hetzelfde getal is als de ring op de kaart. De overige
+  // kenmerken worden wel getoond maar zijn niet weegbaar, zodat er geen
+  // schuifjes in de popup staan die niets doen.
+  const SCORE_METRICS = ["prijsVsBuurt", "energie", "woonopp", "slaapkamers"];
+
+  const INFO_METRICS = [
+    "buitenruimte",
+    "berging",
+    "perceel",
+    "bouwjaar",
+    "klus",
+    "ligging",
+    "ketel",
+    "isolatie"
+  ];
+
   const DEFAULT_WEIGHTS = {
     prijsVsBuurt: 35,
     energie: 20,
     woonopp: 30,
-    slaapkamers: 15,
-    buitenruimte: 10,
-    klus: 10,
-    bouwjaar: 5,
-    berging: 5,
-    ligging: 5,
-    ketel: 5,
-    isolatie: 5,
-    perceel: 5
+    slaapkamers: 15
   };
+
+  // Vaste schalen als er geen referentieaanbod is. Woonoppervlak verschilt te
+  // veel tussen woningtypen voor één band: 48 m² is krap voor een huis maar
+  // heel gewoon voor een appartement.
+  const WOONOPP_BAND = {
+    appartement: [30, 120],
+    huis: [60, 220]
+  };
+
+  // Kopregels uit de kenmerken-tabel. afterLabel gebruikt ze om te weigeren:
+  // heeft een rij geen waarde, dan staat de volgende kopregel er direct achter
+  // en mag die niet als waarde gelden (gebeurde bij "Patio/atrium" ->
+  // "Parkeergelegenheid").
+  const SECTIE_KOPPEN = [
+    "Overdracht",
+    "Bouw",
+    "Oppervlakten en inhoud",
+    "Indeling",
+    "Energie",
+    "Kadastrale gegevens",
+    "Buitenruimte",
+    "Parkeergelegenheid",
+    "VvE checklist",
+    "Bergruimte",
+    "Voorzieningen",
+    "Servicekosten",
+    "Garage"
+  ];
 
   const METRIC_LABELS = {
     prijsVsBuurt: "Prijs t.o.v. aanbod",
@@ -51,9 +89,9 @@ const FundaScore = (() => {
   // Referentie: het aanbod waarin je zoekt. Prijs, oppervlak en slaapkamers
   // scoren als percentiel daarbinnen, en de eindscore wordt een schoolcijfer:
   // mediaan van het aanbod = 6, p90 = 8. Zonder referentie gelden de vaste
-  // schalen hieronder.
-  let referentie = null;
-
+  // schalen. De referentie is een gewoon object dat je meegeeft aan
+  // metricScores/totalScore: geen verborgen staat, dus dezelfde invoer geeft
+  // altijd dezelfde uitvoer.
   function ladder(waarden) {
     const reeks = waarden.filter((v) => v !== null && v !== undefined).sort((a, b) => a - b);
     if (reeks.length < 2) return null;
@@ -95,20 +133,21 @@ const FundaScore = (() => {
     return 10;
   }
 
-  function setReferentie(aanbod) {
-    referentie = null;
-    if (!Array.isArray(aanbod) || aanbod.length < 5) return;
+  function maakReferentie(aanbod, weights) {
+    if (!Array.isArray(aanbod) || aanbod.length < 5) return null;
 
     const ladders = {
       prijs: ladder(aanbod.map((h) => h.prijs)),
       woonopp: ladder(aanbod.map((h) => h.woonopp)),
       slaapkamers: ladder(aanbod.map((h) => h.slaapkamers))
     };
-    if (!ladders.prijs || !ladders.woonopp) return;
+    if (!ladders.prijs || !ladders.woonopp) return null;
 
-    referentie = { ladders, scores: null };
-    const ruw = aanbod.map((h) => ruweScore(h, DEFAULT_WEIGHTS)).filter((s) => s !== null);
-    referentie.scores = ladder(ruw);
+    // De ijkwaarden gebruiken dezelfde wegingen als de score zelf, anders is
+    // het cijfer niet consistent met het ruwe getal.
+    const w = Object.assign({}, DEFAULT_WEIGHTS, weights || {});
+    const ruw = aanbod.map((h) => ruweScore(h, w, null)).filter((s) => s !== null);
+    return { ladders, scores: ladder(ruw) };
   }
 
   function scale(value, worst, best) {
@@ -132,21 +171,31 @@ const FundaScore = (() => {
   // tabel van Funda. Verandert Funda de labeltekst, dan blijft het veld leeg
   // en meldt het paneel welke metrieken ontbreken.
 
+  const norm = (s) =>
+    typeof FundaCommon !== "undefined"
+      ? FundaCommon.normaliseer(s)
+      : String(s === null || s === undefined ? "" : s).replace(/\s+/g, " ").trim();
+
+  const isKopregel = (regel) => SECTIE_KOPPEN.includes(norm(regel));
+
   function textLines(root) {
     const raw = (root || document.body).innerText || "";
-    return raw.split("\n").map((l) => l.trim());
+    return raw.split("\n").map(norm);
   }
 
+  // Pakt de waarde achter een label. Heeft de rij geen waarde, dan volgt de
+  // volgende kopregel direct: die wordt geweigerd in plaats van als waarde
+  // door te gaan.
   function afterLabel(lines, label, offset) {
     const skip = offset || 0;
+    const doel = norm(label);
     for (let i = 0; i < lines.length; i++) {
-      if (lines[i] === label) {
-        let seen = 0;
-        for (let j = i + 1; j < Math.min(lines.length, i + 8); j++) {
-          if (lines[j] === "") continue;
-          if (seen === skip) return lines[j];
-          seen++;
-        }
+      if (lines[i] !== doel) continue;
+      let seen = 0;
+      for (let j = i + 1; j < Math.min(lines.length, i + 8); j++) {
+        if (lines[j] === "") continue;
+        if (seen === skip) return isKopregel(lines[j]) ? null : lines[j];
+        seen++;
       }
     }
     return null;
@@ -157,10 +206,12 @@ const FundaScore = (() => {
   // staat bij Energie en nog eens bij de berging). Deze variant loopt alle
   // voorkomens af en pakt de eerste waarde die op het patroon past.
   function afterLabelMatching(lines, label, regex) {
+    const doel = norm(label);
     for (let i = 0; i < lines.length; i++) {
-      if (lines[i] !== label) continue;
+      if (lines[i] !== doel) continue;
       for (let j = i + 1; j < Math.min(lines.length, i + 4); j++) {
-        if (lines[j] === "" || lines[j] === label) continue;
+        if (lines[j] === "" || lines[j] === doel) continue;
+        if (isKopregel(lines[j])) break;
         if (regex.test(lines[j])) return lines[j];
         break;
       }
@@ -169,10 +220,17 @@ const FundaScore = (() => {
   }
 
   function parseTitleAddress() {
-    // paginatitel: "Huis te koop: Nijhoffstraat 3 6821 BG Arnhem | Funda"
-    const t = document.title || "";
-    const m = t.match(/^[^:]*:\s*(.+?)\s*\|/);
-    return m ? m[1] : t.replace(/\s*\|\s*Funda\s*$/, "").trim();
+    // Eerst de og:title-meta, dan de paginatitel
+    // ("Huis te koop: Nijhoffstraat 3 6821 BG Arnhem | Funda").
+    const og = document.querySelector('meta[property="og:title"]');
+    for (const ruw of [og && og.getAttribute("content"), document.title]) {
+      const t = norm(ruw);
+      if (!t) continue;
+      const m = t.match(/^[^:]*:\s*(.+?)\s*\|\s*/) || t.match(/^[^:]*:\s*(.+)$/);
+      const adres = norm(m ? m[1] : t.replace(/\|\s*Funda\s*$/, ""));
+      if (adres) return adres;
+    }
+    return "";
   }
 
   const TUIN_VELDEN = [
@@ -185,6 +243,48 @@ const FundaScore = (() => {
     "Gebouwgebonden buitenruimte"
   ];
 
+  // Eén implementatie voor beide bronnen (paginatekst en API); eerst waren het
+  // er twee die net anders rekenden.
+  function tuinVan(zoek) {
+    let m2 = 0;
+    const delen = [];
+    for (const veld of TUIN_VELDEN) {
+      const v = parseNumber(zoek(veld));
+      if (v) {
+        m2 += v;
+        delen.push(`${veld.toLowerCase()} ${v} m²`);
+      }
+    }
+    return { m2, delen: delen.join(" + ") };
+  }
+
+  // Alleen echte labels accepteren, zodat een kopregel er niet als
+  // energielabel in komt. Funda's API schrijft de klasse met het aantal plussen
+  // als cijfer ("A3"), de pagina zelf schrijft "A+++" — die twee gelijktrekken.
+  function energieLabel(waarde) {
+    if (!waarde) return null;
+    const t = norm(waarde).toUpperCase().replace(/\s/g, "");
+    if (/^(A\+*|B|C|D|E|F|G)$/.test(t)) return t;
+    const m = t.match(/^A([1-4])$/);
+    return m ? "A" + "+".repeat(Number(m[1])) : null;
+  }
+
+  function statusWaarde(waarde) {
+    if (!waarde) return null;
+    const t = norm(waarde);
+    return isKopregel(t) ? null : t;
+  }
+
+  // "Soort woonhuis" staat niet op elke pagina (bij appartementen ontbreekt het
+  // label), dus leiden we het type ook af uit de url en de titel. Anders kreeg
+  // een appartement de huisband en scoorde het op woonoppervlak 0.
+  function typeHint() {
+    const bron = `${location.pathname} ${document.title}`.toLowerCase();
+    return /appartement|benedenwoning|bovenwoning|portiekflat|galerijflat|studio/.test(bron)
+      ? "appartement"
+      : null;
+  }
+
   function parseListing() {
     const lines = textLines();
     const get = (label, offset) => afterLabel(lines, label, offset);
@@ -192,6 +292,8 @@ const FundaScore = (() => {
     const kamersRaw = get("Aantal kamers");
     let slaapkamers = null;
     if (kamersRaw) {
+      // "5 kamers (4 slaapkamers)" wel, "2 kamers" niet: het totaal aantal
+      // kamers is niet het aantal slaapkamers, dus dan blijft het onbekend.
       const m = kamersRaw.match(/(\d+)\s*slaapkamer/);
       if (m) slaapkamers = parseInt(m[1], 10);
     }
@@ -204,15 +306,9 @@ const FundaScore = (() => {
     }
 
     // Alle tuinvelden optellen: Funda splitst voor-, achter- en zijtuin.
-    let tuinM2 = 0;
-    const tuinDelen = [];
-    for (const veld of TUIN_VELDEN) {
-      const v = parseNumber(get(veld));
-      if (v) {
-        tuinM2 += v;
-        tuinDelen.push(`${veld.toLowerCase()} ${v} m²`);
-      }
-    }
+    const tuin = tuinVan((veld) => get(veld));
+    const tuinM2 = tuin.m2;
+    const tuinDelen = tuin.delen;
     const tuinRaw = get("Tuin"); // bv. "Achtertuin en voortuin" - soms zonder maat
     const tuinAanwezig = tuinM2 > 0 || Boolean(tuinRaw);
 
@@ -226,7 +322,7 @@ const FundaScore = (() => {
       url: location.href.split("?")[0],
       adres: parseTitleAddress(),
       opgeslagenOp: new Date().toISOString().slice(0, 10),
-      status: get("Status"),
+      status: statusWaarde(get("Status")),
       prijs: parseNumber(get("Vraagprijs")),
       prijsPerM2: parseNumber(get("Vraagprijs per m²")),
       buurtPrijsPerM2: parseNumber(get("Gem. vraagprijs / m²")),
@@ -237,18 +333,19 @@ const FundaScore = (() => {
       kamersRaw: kamersRaw,
       bouwjaar: parseNumber(get("Bouwjaar")),
       specifiek: specifiek,
-      energielabel: get("Energielabel"),
+      energielabel: energieLabel(get("Energielabel")),
       isolatieRaw: isolatieRaw,
       ketelJaar: ketelJaar,
       ketelRaw: ketelRaw,
       liggingRaw: get("Ligging"),
       tuinM2: tuinM2,
       tuinRaw: tuinRaw,
-      tuinDelen: tuinDelen.join(" + "),
+      tuinDelen: tuinDelen,
       tuinAanwezig: tuinAanwezig,
       bergingRaw: get("Schuur/berging"),
       eigendom: get("Eigendomssituatie"),
-      woningtype: get("Soort woonhuis")
+      woningtype: get("Soort woonhuis"),
+      typeHint: typeHint()
     };
   }
 
@@ -269,8 +366,11 @@ const FundaScore = (() => {
 
   async function bridgeOnthouden(poort) {
     try {
-      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local)
+      if (typeof FundaCommon !== "undefined") {
+        await FundaCommon.schrijf({ [BRIDGE_POORT_KEY]: poort });
+      } else if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
         await chrome.storage.local.set({ [BRIDGE_POORT_KEY]: poort });
+      }
     } catch (e) { }
   }
 
@@ -299,10 +399,13 @@ const FundaScore = (() => {
     bridgeBezig = (async () => {
       let voorkeur = BRIDGE_URL;
       try {
-        if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-          const store = await chrome.storage.local.get(BRIDGE_POORT_KEY);
-          if (store && store[BRIDGE_POORT_KEY]) voorkeur = `http://127.0.0.1:${store[BRIDGE_POORT_KEY]}`;
+        let poort = null;
+        if (typeof FundaCommon !== "undefined") {
+          poort = (await FundaCommon.lees(BRIDGE_POORT_KEY))[BRIDGE_POORT_KEY];
+        } else if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+          poort = (await chrome.storage.local.get(BRIDGE_POORT_KEY))[BRIDGE_POORT_KEY];
         }
+        if (poort) voorkeur = `http://127.0.0.1:${poort}`;
       } catch (e) { }
 
       const orde = [voorkeur].concat(
@@ -366,12 +469,36 @@ const FundaScore = (() => {
     "woningtype"
   ];
 
+  const BRIDGE_NUMERIEK = [
+    "prijs",
+    "prijsPerM2",
+    "buurtPrijsPerM2",
+    "woonopp",
+    "perceel",
+    "inhoud",
+    "slaapkamers",
+    "bouwjaar"
+  ];
+
   function mergeBridge(huis, data) {
     if (!data) return huis;
     const out = Object.assign({}, huis);
     for (const veld of BRIDGE_VELDEN) {
       const v = data[veld];
-      if (v !== null && v !== undefined) out[veld] = v;
+      if (v === null || v === undefined) continue;
+      // Een waarde die we niet kunnen lezen mag de goede paginatekst niet
+      // overschrijven; anders komt er bijvoorbeeld "A3" of "onbekend" in.
+      if (veld === "energielabel") {
+        const label = energieLabel(v);
+        if (label) out[veld] = label;
+        continue;
+      }
+      if (BRIDGE_NUMERIEK.includes(veld)) {
+        const n = typeof v === "number" ? v : parseNumber(v);
+        if (n !== null) out[veld] = n;
+        continue;
+      }
+      out[veld] = v;
     }
     if (data.status) out.status = data.status === "available" ? "Beschikbaar" : data.status;
     if (data.adres) out.adres = data.adres;
@@ -392,11 +519,13 @@ const FundaScore = (() => {
     return out;
   }
 
-  // "Isolatie" en "Cv-ketel" staan in meerdere secties; de sectievolgorde hier
-  // bepaalt welke wint (Bergruimte heeft een eigen Isolatie-regel).
+  // "Isolatie" en "Cv-ketel" staan in meerdere secties; de voorkeursvolgorde
+  // hier bepaalt welke wint (Bergruimte heeft een eigen Isolatie-regel). Valt
+  // Funda een sectienaam om, dan zoeken we alsnog in alle secties.
   function kenmerk(data, secties, label) {
     const k = data.kenmerken || {};
-    for (const naam of secties) {
+    const orde = secties.concat(Object.keys(k).filter((n) => !secties.includes(n)));
+    for (const naam of orde) {
       const sec = k[naam];
       if (sec && sec[label] !== undefined && sec[label] !== null) return sec[label];
     }
@@ -425,17 +554,11 @@ const FundaScore = (() => {
     const specifiek = kenmerk(data, ["Bouw"], "Specifiek");
     if (specifiek) out.specifiek = specifiek;
 
-    const buiten = data.kenmerken["Buitenruimte"];
+    const buiten = data.kenmerken["Buitenruimte"] || data.kenmerken["Tuin"] || null;
     if (buiten) {
-      let m2 = 0;
-      const delen = [];
-      for (const veld of TUIN_VELDEN) {
-        const v = parseNumber(buiten[veld]);
-        if (v) {
-          m2 += v;
-          delen.push(`${veld.toLowerCase()} ${v} m²`);
-        }
-      }
+      const tuin = tuinVan((veld) => buiten[veld]);
+      let m2 = tuin.m2;
+      const delen = tuin.delen ? [tuin.delen] : [];
       // gebouwgebonden buitenruimte staat bij de oppervlakten, niet bij Buitenruimte
       if (data.buitenruimte) {
         m2 += data.buitenruimte;
@@ -473,16 +596,21 @@ const FundaScore = (() => {
 
   function isolatieScore(raw) {
     if (!raw) return null;
-    const t = raw.toLowerCase();
+    const t = String(raw).toLowerCase();
     if (/geen isolatie/.test(t)) return 0;
+
     let punten = 0;
-    if (/volledig ge[iï]soleerd/.test(t)) punten += 6;
-    if (/hr\+\+\+/.test(t)) punten += 4;
-    else if (/hr\+\+/.test(t)) punten += 3;
-    else if (/hr-?glas|dubbel glas/.test(t)) punten += 2;
-    if (/dakisolatie/.test(t)) punten += 2;
-    if (/muurisolatie|spouwmuur/.test(t)) punten += 2;
-    if (/vloerisolatie/.test(t)) punten += 2;
+    let herkend = false;
+    if (/volledig ge[iï]soleerd/.test(t)) { punten += 6; herkend = true; }
+    if (/hr\+\+\+/.test(t)) { punten += 4; herkend = true; }
+    else if (/hr\+\+/.test(t)) { punten += 3; herkend = true; }
+    else if (/hr-?glas|dubbel glas|drievoudig|triple/.test(t)) { punten += 2; herkend = true; }
+    if (/dakisolatie/.test(t)) { punten += 2; herkend = true; }
+    if (/muurisolatie|spouwmuur/.test(t)) { punten += 2; herkend = true; }
+    if (/vloerisolatie/.test(t)) { punten += 2; herkend = true; }
+
+    // Onbekende tekst levert geen 0 op: dan weten we het niet.
+    if (!herkend) return null;
     // "gedeeltelijk dubbel glas" is geen dubbel glas
     if (/gedeeltelijk/.test(t)) punten = punten / 2;
     return clamp(punten, 0, 10);
@@ -495,13 +623,23 @@ const FundaScore = (() => {
     return null; // Funda meldt niets bijzonders: metriek telt niet mee
   }
 
-  function metricScores(h) {
+  // Woonoppervlak zonder referentie: kies de band bij het woningtype.
+  function woonoppScore(h, ref) {
+    if (ref) return maalTien(percentiel(ref.ladders.woonopp, h.woonopp));
+    if (h.woonopp === null || h.woonopp === undefined) return null;
+    const type = `${h.woningtype || ""} ${h.typeHint || ""}`.toLowerCase();
+    const band = WOONOPP_BAND[type.includes("appartement") ? "appartement" : "huis"];
+    return scale(h.woonopp, band[0], band[1]);
+  }
+
+  function metricScores(h, ref) {
     const nu = new Date().getFullYear();
+    const r = ref || null;
 
     // Met referentie telt de vraagprijs zelf: goedkoop t.o.v. het aanbod = hoog.
     let prijsScore = null;
-    if (referentie) {
-      const p = percentiel(referentie.ladders.prijs, h.prijs);
+    if (r) {
+      const p = percentiel(r.ladders.prijs, h.prijs);
       prijsScore = p === null ? null : (1 - p) * 10;
     } else if (h.prijsPerM2 && h.buurtPrijsPerM2) {
       prijsScore = scale(h.prijsPerM2 / h.buurtPrijsPerM2, 1.4, 0.8);
@@ -509,42 +647,41 @@ const FundaScore = (() => {
       prijsScore = scale(h.prijsPerM2, 7000, 2000);
     }
 
+    // Onbekende tekst wordt niet als "gemiddeld" gescoord: dan is de ligging
+    // simpelweg niet te beoordelen.
     let liggingScore = null;
     if (h.liggingRaw) {
-      const l = h.liggingRaw.toLowerCase();
+      const l = String(h.liggingRaw).toLowerCase();
       if (/drukke weg/.test(l)) liggingScore = 1;
       else if (/rustige weg/.test(l)) liggingScore = 9;
       else if (/woonwijk|beschutte/.test(l)) liggingScore = 6;
-      else liggingScore = 5;
-      if (/vrij uitzicht|bosrand|water/.test(l)) liggingScore = clamp(liggingScore + 1, 0, 10);
+      else if (/vrij uitzicht|bosrand|water/.test(l)) liggingScore = 7;
+      if (liggingScore !== null && /vrij uitzicht|bosrand|water/.test(l))
+        liggingScore = clamp(liggingScore + 1, 0, 10);
     }
 
-    // h.beperkt: bron kent tuin/berging niet (kaart-API), dan als onbekend laten
+    // Een ontbrekend veld betekent onbekend, niet "geen".
     let bergingScore = null;
     if (h.bergingRaw) bergingScore = /geen/i.test(h.bergingRaw) ? 0 : 10;
-    else if (h.woonopp && !h.beperkt) bergingScore = 0; // veld ontbreekt = geen berging vermeld
 
     let tuinScore = null;
     if (h.tuinM2 > 0) tuinScore = scale(h.tuinM2, 0, 60);
     else if (h.tuinAanwezig) tuinScore = 5; // tuin vermeld, maat onbekend
-    else if (h.woonopp && !h.beperkt) tuinScore = 0;
 
     return {
       prijsVsBuurt: prijsScore,
       energie: energyScore(h.energielabel),
-      woonopp: referentie
-        ? maalTien(percentiel(referentie.ladders.woonopp, h.woonopp))
-        : scale(h.woonopp, 55, 195),
+      woonopp: woonoppScore(h, r),
       slaapkamers:
-        referentie && referentie.ladders.slaapkamers
-          ? maalTien(percentiel(referentie.ladders.slaapkamers, h.slaapkamers))
+        r && r.ladders.slaapkamers
+          ? maalTien(percentiel(r.ladders.slaapkamers, h.slaapkamers))
           : scale(h.slaapkamers, 1, 4),
       buitenruimte: tuinScore,
       klus: klusScore(h),
       bouwjaar: scale(h.bouwjaar, 1900, 2000),
       berging: bergingScore,
       ligging: liggingScore,
-      ketel: h.ketelJaar === null ? null : scale(nu - h.ketelJaar, 18, 2),
+      ketel: h.ketelJaar === null || h.ketelJaar === undefined ? null : scale(nu - h.ketelJaar, 18, 2),
       isolatie: isolatieScore(h.isolatieRaw),
       perceel: scale(h.perceel, 15, 200)
     };
@@ -552,35 +689,15 @@ const FundaScore = (() => {
 
   // ---------- totaalscore ----------
 
-  // Alleen de metrieken die de zoek-API ook levert, zodat de score op de
-  // detailpagina hetzelfde getal is als de ring op de kaart.
-  const SCORE_METRICS = ["prijsVsBuurt", "energie", "woonopp", "slaapkamers"];
-
   const maalTien = (p) => (p === null ? null : p * 10);
 
-  function ruweScore(h, weights) {
-    const w = Object.assign({}, DEFAULT_WEIGHTS, weights || {});
-    const m = metricScores(h);
+  function telOp(m, w) {
     let som = 0;
     let gewicht = 0;
-    for (const key of SCORE_METRICS) {
-      const s = m[key];
-      if (s === null || s === undefined) continue;
-      som += s * w[key];
-      gewicht += w[key];
-    }
-    return gewicht > 0 ? som / gewicht : null;
-  }
-
-  function totalScore(h, weights) {
-    const w = Object.assign({}, DEFAULT_WEIGHTS, weights || {});
-    const m = metricScores(h);
-    let som = 0;
-    let gewicht = 0;
+    let totaalGewicht = 0;
     const ontbreekt = [];
-    const notities = [];
-
     for (const key of SCORE_METRICS) {
+      totaalGewicht += w[key];
       const s = m[key];
       if (s === null || s === undefined) {
         ontbreekt.push(METRIC_LABELS[key] || key);
@@ -589,18 +706,41 @@ const FundaScore = (() => {
       som += s * w[key];
       gewicht += w[key];
     }
+    return { som, gewicht, totaalGewicht, ontbreekt };
+  }
 
-    if (!referentie && h.prijsPerM2 && !h.buurtPrijsPerM2)
+  function ruweScore(h, weights, ref) {
+    const w = Object.assign({}, DEFAULT_WEIGHTS, weights || {});
+    const { som, gewicht } = telOp(metricScores(h, ref), w);
+    return gewicht > 0 ? som / gewicht : null;
+  }
+
+  function totalScore(h, weights, ref) {
+    const w = Object.assign({}, DEFAULT_WEIGHTS, weights || {});
+    const r = ref || null;
+    const m = metricScores(h, r);
+    const { som, gewicht, totaalGewicht, ontbreekt } = telOp(m, w);
+    const notities = [];
+
+    if (!r) {
+      notities.push("Geen referentieaanbod: percentielscores uit.");
+      if (h.woonopp)
+        notities.push("Woonoppervlak op vaste schaal voor dit woningtype.");
+    }
+    if (!r && h.prijsPerM2 && !h.buurtPrijsPerM2)
       notities.push("Geen buurtgemiddelde: prijs/m² op absolute schaal gescoord.");
     if (h.tuinAanwezig && !(h.tuinM2 > 0))
       notities.push("Tuin vermeld zonder oppervlak: als middenscore gerekend.");
 
+    // De score telt alleen de metrieken die er zijn. Zonder volledige dekking
+    // zijn scores onderling niet goed vergelijkbaar, dus dat wordt gemeld.
+    const dekking = totaalGewicht > 0 ? gewicht / totaalGewicht : 0;
+
     let score = gewicht > 0 ? som / gewicht : null;
-    if (score !== null && referentie && referentie.scores)
-      score = cijfer(percentiel(referentie.scores, score));
+    if (score !== null && r && r.scores) score = cijfer(percentiel(r.scores, score));
     const waarde = score !== null && h.prijs ? score / (h.prijs / 100000) : null;
 
-    return { score, waarde, metrics: m, ontbreekt, notities };
+    return { score, waarde, metrics: m, ontbreekt, notities, dekking };
   }
 
   // ---------- breekpunten ----------
@@ -626,7 +766,8 @@ const FundaScore = (() => {
     DEFAULT_FILTERS,
     METRIC_LABELS,
     SCORE_METRICS,
-    setReferentie,
+    INFO_METRICS,
+    maakReferentie,
     parseListing,
     parseNumber,
     fetchBridge,

@@ -16,6 +16,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { laadPlaywright, chromiumPad } = require("./browser.cjs");
 
 const WORTEL = path.resolve(__dirname, "..");
 const EXTENSIE = path.join(WORTEL, "extension");
@@ -24,36 +25,6 @@ const URL =
     "https://www.funda.nl/detail/koop/utrecht/appartement-bataviastraat-42/44592608/";
 const headless = process.env.HEADLESS === "1";
 const eisBrug = process.env.REQUIRE_BRIDGE === "1";
-
-function laadPlaywright() {
-    try {
-        return require("playwright");
-    } catch (e) {
-        console.error("playwright niet gevonden. Bijvoorbeeld:");
-        console.error("  npm install --no-save playwright");
-        console.error("  NODE_PATH=<pad>/node_modules node tests/extension-live.cjs");
-        process.exit(2);
-    }
-}
-
-// Playwright verwacht zijn eigen build; pak een Chromium die al in de cache
-// staat, ongeacht het versienummer, zodat er niets gedownload wordt.
-function chromiumPad() {
-    const basis = path.join(os.homedir(), ".cache", "ms-playwright");
-    if (!fs.existsSync(basis)) return undefined;
-    const mappen = fs
-        .readdirSync(basis)
-        .filter((d) => d.startsWith("chromium-"))
-        .sort()
-        .reverse();
-    for (const map of mappen) {
-        for (const sub of ["chrome-linux64/chrome", "chrome-linux/chrome"]) {
-            const pad = path.join(basis, map, sub);
-            if (fs.existsSync(pad)) return pad;
-        }
-    }
-    return undefined;
-}
 
 // De Didomi-cookiebalk staat in een iframe en blokkeert het zicht op het
 // paneel. Achtergrond alleen; mislukken is geen testfout.

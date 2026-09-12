@@ -17,6 +17,7 @@
   let cells = [];
   let colors = {};
   let signature = "";
+  let gemeld = false;
 
   // Funda haalt de Map-klasse via importLibrary op, dus de constructor zelf
   // vervangen helpt niet: de prototypes zijn wel gedeeld. Elke instantie die
@@ -155,15 +156,37 @@
     }
   }
 
+  // De Pinia-store is een interne Funda-API. We proberen meerdere paden en
+  // melden het duidelijk als geen ervan werkt, in plaats van stil niets te doen.
+  function leesStore() {
+    const paden = [
+      () => window.useNuxtApp().$pinia.state.value.search,
+      () => window.useNuxtApp().$pinia.state.value.funda.search,
+      () => window.__NUXT__ && window.__NUXT__.state && window.__NUXT__.state.search
+    ];
+    for (const pad of paden) {
+      try {
+        const s = pad();
+        if (s && Array.isArray(s.mapAggregations)) return s;
+      } catch (e) { }
+    }
+    return null;
+  }
+
   function readCells() {
-    let state;
-    try {
-      state = window.useNuxtApp().$pinia.state.value.search;
-    } catch (e) {
+    const state = leesStore();
+    if (!state) {
+      if (!gemeld) {
+        gemeld = true;
+        window.postMessage(
+          { source: MSG_STATUS, tekst: "Kaartlaag: Funda-indeling onbekend", bezig: false },
+          location.origin
+        );
+      }
       return null;
     }
-    const aggs = state && state.mapAggregations;
-    if (!Array.isArray(aggs) || !aggs.length) return null;
+    const aggs = state.mapAggregations;
+    if (!aggs.length) return null;
 
     return aggs
       .map((agg) => {
@@ -181,9 +204,12 @@
   }
 
   function poll() {
+    if (document.visibilityState === "hidden") return;
     const fresh = readCells();
     if (!fresh) return;
-    const next = `${fresh.length}|${fresh[0].key}|${fresh[fresh.length - 1].key}`;
+    // Volledige vingerafdruk: eerst keken we alleen naar de eerste en laatste
+    // cel, waardoor een wijziging in het midden gemist werd.
+    const next = `${fresh.length}|${fresh.map((c) => c.key + ":" + c.ids.length).join(",")}`;
     if (next === signature) return;
     signature = next;
     cells = fresh;
@@ -213,5 +239,13 @@
     if (patchMaps(window.google && window.google.maps)) clearInterval(patchTimer);
   }, 50);
   patchMaps(window.google && window.google.maps);
+  // Niet oneindig blijven zoeken naar de kaart: anders loopt er op elke
+  // zoekpagina een timer door.
+  setTimeout(() => clearInterval(patchTimer), 60000);
+
+  // Pollen slaat over zolang het tabblad niet zichtbaar is.
   setInterval(poll, 1000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") poll();
+  });
 })();

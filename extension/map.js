@@ -5,7 +5,6 @@
 (() => {
   "use strict";
 
-  const api = typeof browser !== "undefined" ? browser : chrome;
   const MSG_CELLS = "fundascorer:cells";
   const MSG_COLORS = "fundascorer:colors";
   const MSG_LOAD = "fundascorer:load";
@@ -15,6 +14,8 @@
   let area = null;
   let listings = null;
   let bezig = false;
+  let ref = null; // opgebouwd referentieaanbod
+  let refVies = true; // opnieuw opbouwen zodra het aanbod wijzigt
   // na een extensie-reload draait deze pagina op een dode context: alle
   // chrome.*-aanroepen gooien dan "Extension context invalidated".
   let dood = false;
@@ -56,8 +57,12 @@
     let data;
     const extra = filterQuery();
     try {
+      // Niet FundaScore.BRIDGE_URL: dat is alleen de default, en de brug kan op
+      // een andere poort staan (8765 is hier bezet). Zelfde resolutie als de
+      // detailpagina, anders doet de kaartlaag stil niets.
+      const basis = await FundaScore.resolveBridgeUrl();
       const res = await fetch(
-        `${FundaScore.BRIDGE_URL}/area?area=${encodeURIComponent(slug)}${extra ? "&" + extra : ""}`
+        `${basis}/area?area=${encodeURIComponent(slug)}${extra ? "&" + extra : ""}`
       );
       if (!res.ok) return null;
       data = await res.json();
@@ -67,11 +72,7 @@
     if (!data || !data.ok) return null;
 
     const map = {};
-    for (const item of data.listings) {
-      // beperkt: de zoek-API kent geen tuin/berging, die metrieken moeten
-      // ontbreken in plaats van als 0 te tellen.
-      map[item.id] = Object.assign({ beperkt: true }, item);
-    }
+    for (const item of data.listings) map[item.id] = item;
     return map;
   }
 
@@ -87,6 +88,7 @@
         if (!loaded) return;
         listings = loaded;
         area = sleutel;
+        refVies = true;
       }
 
       const weights = await gewichten();
@@ -98,13 +100,13 @@
   }
 
   async function gewichten() {
-    if (!api.runtime || !api.runtime.id) {
+    if (!FundaCommon.api.runtime || !FundaCommon.api.runtime.id) {
       dood = true;
       return null;
     }
     try {
-      const store = await api.storage.local.get("weights");
-      return store.weights || FundaScore.DEFAULT_WEIGHTS;
+      const weights = await FundaCommon.Store.weights();
+      return Object.assign({}, FundaScore.DEFAULT_WEIGHTS, weights);
     } catch (e) {
       dood = true;
       return null;
@@ -114,8 +116,19 @@
   // score 2 of lager = rood, 8 of hoger = groen; daartussen lineair
   const tint = (score) => Math.min(1, Math.max(0, (score - 2) / 6));
 
+  // Het referentieaanbod hangt alleen van de woningen af, niet van de cellen:
+  // één keer opbouwen per binnengehaalde set in plaats van bij elke
+  // kaartbeweging (render hangt aan bounds_changed en idle).
+  function referentieVoor(weights) {
+    if (refVies || !ref) {
+      ref = FundaScore.maakReferentie(Object.values(listings || {}), weights);
+      refVies = false;
+    }
+    return ref;
+  }
+
   function stuurKleuren(cells, weights) {
-    FundaScore.setReferentie(Object.values(listings || {}));
+    const ref = referentieVoor(weights);
 
     const colors = {};
     for (const cell of cells) {
@@ -123,7 +136,7 @@
       for (const id of cell.ids) {
         const huis = listings && listings[id];
         if (!huis) continue;
-        const res = FundaScore.totalScore(huis, weights);
+        const res = FundaScore.totalScore(huis, weights, ref);
         if (res.score !== null) scores.push(res.score);
       }
       if (!scores.length) continue;
@@ -150,10 +163,15 @@
       if (!weights) return;
       if (!listings) listings = {};
 
+      // Set in plaats van ids.includes(): dat was O(n²) en bij een heel land
+      // zonder gebiedsfilter liep dat in de duizenden ids.
+      const gezien = new Set();
       const ids = [];
       for (const cell of cells) {
         for (const id of cell.ids) {
-          if (!listings[id] && !ids.includes(id)) ids.push(id);
+          if (listings[id] || gezien.has(id)) continue;
+          gezien.add(id);
+          ids.push(id);
         }
       }
       if (!ids.length) {
@@ -167,9 +185,8 @@
         status(`Laden ${Math.min(i + deel.length, ids.length)}/${ids.length}`, true);
         let data;
         try {
-          const res = await fetch(
-            `${FundaScore.BRIDGE_URL}/listings?ids=${deel.join(",")}`
-          );
+          const basis = await FundaScore.resolveBridgeUrl();
+          const res = await fetch(`${basis}/listings?ids=${deel.join(",")}`);
           data = res.ok ? await res.json() : null;
         } catch (e) {
           data = null;
@@ -178,9 +195,8 @@
           status("Brug onbereikbaar", false);
           return;
         }
-        for (const item of data.listings) {
-          listings[item.id] = Object.assign({ beperkt: true }, item);
-        }
+        for (const item of data.listings) listings[item.id] = item;
+        refVies = true;
         stuurKleuren(cells, weights);
       }
 
@@ -202,8 +218,9 @@
       return;
     }
     if (data.source !== MSG_CELLS) return;
+    // Een tijdelijke fout mag de kaartlaag niet permanent uitzetten.
     handle(data.cells).catch(() => {
-      dood = true;
+      bezig = false;
     });
   });
 })();

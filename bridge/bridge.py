@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from funda import Funda
 from funda.listing import Address, Listing, Urls
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 HOST = "127.0.0.1"
 # Poort instelbaar: op de laptop bezet de claudecodebrowser-MCP al 8765.
 PORT = int(os.environ.get("FUNDA_BRIDGE_PORT", "8765"))
@@ -288,7 +288,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Access-Control-Allow-Origin", self._origin())
+        self._cors()
         self.end_headers()
         self.wfile.write(payload)
 
@@ -297,9 +297,18 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin") or ""
         return origin if origin.startswith("chrome-extension://") else ORIGIN
 
+    def _cors(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", self._origin())
+        # Chrome's Local Network Access: een pagina op een publiek adres
+        # (funda.nl) mag 127.0.0.1 alleen benaderen als de server dat expliciet
+        # toestaat. Zonder deze header blokkeert Chrome de fetch met
+        # "Permission was denied for this request to access the loopback
+        # address space".
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+
     def do_OPTIONS(self) -> None:
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", self._origin())
+        self._cors()
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()

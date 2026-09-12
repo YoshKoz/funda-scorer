@@ -1,81 +1,91 @@
 <!DOCTYPE html>
 <html lang="nl">
-  <head>
-    <meta charset="utf-8" />
-    <title>Funda Scorer</title>
-    <link rel="stylesheet" href="popup.css" />
-  </head>
-  <body>
-    <header class="head">
-      <h1>Funda Scorer</h1>
-      <nav class="tabs">
-        <button type="button" class="tab is-active" data-tab="ranglijst">Ranglijst</button>
-        <button type="button" class="tab" data-tab="wegingen">Wegingen</button>
-        <button type="button" class="tab" data-tab="breekpunten">Breekpunten</button>
-        <button type="button" class="tab" data-tab="adres">Adres</button>
-      </nav>
-    </header>
 
-    <section id="ranglijst" class="panel is-active">
-      <div class="toolbar">
-        <label>
-          Sorteer op
-          <select id="sort">
-            <option value="score">Score, hoog naar laag</option>
-            <option value="score-asc">Score, laag naar hoog</option>
-            <option value="waarde">Waarde-index</option>
-            <option value="prijs">Prijs, laag naar hoog</option>
-            <option value="prijsm2">Prijs per m², laag naar hoog</option>
-          </select>
-        </label>
-        <button type="button" id="export">Exporteer CSV</button>
-      </div>
-      <div id="lijst"></div>
-    </section>
+<head>
+  <meta charset="utf-8" />
+  <title>Funda Scorer</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
 
-    <section id="wegingen" class="panel">
-      <p class="hint">
-        Elke weging telt mee in de eindscore. Metrieken die niet op een pagina staan,
-        worden overgeslagen en tellen niet mee.
-      </p>
-      <div id="weegvelden"></div>
-      <button type="button" id="reset-wegingen">Zet terug op standaard</button>
-    </section>
+<body>
+  <header class="head">
+    <h1>Funda Scorer</h1>
+    <nav class="tabs">
+      <button type="button" class="tab is-active" data-tab="ranglijst">Ranglijst</button>
+      <button type="button" class="tab" data-tab="wegingen">Wegingen</button>
+      <button type="button" class="tab" data-tab="breekpunten">Breekpunten</button>
+      <button type="button" class="tab" data-tab="adres">Adres</button>
+    </nav>
+  </header>
 
-    <section id="breekpunten" class="panel">
-      <p class="hint">
-        Breekpunten veranderen de score niet. Ze markeren huizen die op een harde eis zakken.
-      </p>
-      <label class="veld">Minimaal aantal slaapkamers
-        <input type="number" id="minSlaapkamers" min="0" step="1" />
+  <section id="ranglijst" class="panel is-active">
+    <div class="toolbar">
+      <label>
+        Sorteer op
+        <select id="sort">
+          <option value="score">Score, hoog naar laag</option>
+          <option value="score-asc">Score, laag naar hoog</option>
+          <option value="waarde">Waarde-index</option>
+          <option value="prijs">Prijs, laag naar hoog</option>
+          <option value="prijsm2">Prijs per m², laag naar hoog</option>
+        </select>
       </label>
-      <label class="veld">Minimaal woonoppervlak (m²)
-        <input type="number" id="minWoonopp" min="0" step="1" />
-      </label>
-      <label class="veld">Maximale vraagprijs (€, 0 = uit)
-        <input type="number" id="maxPrijs" min="0" step="1000" />
-      </label>
-      <label class="veld veld-check">
-        <input type="checkbox" id="tuinVerplicht" /> Tuin verplicht
-      </label>
-      <label class="veld veld-check">
-        <input type="checkbox" id="bergingVerplicht" /> Berging verplicht
-      </label>
-    </section>
+      <button type="button" id="export">Exporteer CSV</button>
+    </div>
+    <div id="lijst"></div>
+  </section>
 
-    <section id="adres" class="panel">
-      <p class="hint">
-        Prijs- en WOZ-historie op adres, ook van woningen die niet meer op Funda staan.
-        Vereist de lokale brug.
-      </p>
-      <label class="veld">Adres
-        <input type="text" id="adres-q" placeholder="Erpstraat 51 Arnhem" />
-      </label>
-      <button type="button" id="adres-zoek">Zoek historie</button>
-      <div id="adres-uit"></div>
-    </section>
+  <section id="wegingen" class="panel">
+    <p class="hint">
+      Deze vier wegingen bepalen de eindscore — hetzelfde getal als de ring op de
+      kaart. Staat een metriek niet op de pagina, dan wordt hij overgeslagen; de
+      dekking daarvan staat bij de score.
+    </p>
+    <div id="weegvelden"></div>
+    <p class="hint">
+      Deze kenmerken komen niet uit de zoek-API en zijn daarom niet weegbaar. Ze
+      worden wel bij elk huis getoond:
+    </p>
+    <div id="info-metrics"></div>
+    <button type="button" id="reset-wegingen">Zet terug op standaard</button>
+  </section>
 
-    <script src="scoring.js"></script>
-    <script src="popup.js"></script>
-  </body>
+  <section id="breekpunten" class="panel">
+    <p class="hint">
+      Breekpunten veranderen de score niet. Ze markeren huizen die op een harde eis zakken.
+    </p>
+    <label class="veld">Minimaal aantal slaapkamers
+      <input type="number" id="minSlaapkamers" min="0" step="1" />
+    </label>
+    <label class="veld">Minimaal woonoppervlak (m²)
+      <input type="number" id="minWoonopp" min="0" step="1" />
+    </label>
+    <label class="veld">Maximale vraagprijs (€, 0 = uit)
+      <input type="number" id="maxPrijs" min="0" step="1000" />
+    </label>
+    <label class="veld veld-check">
+      <input type="checkbox" id="tuinVerplicht" /> Tuin verplicht
+    </label>
+    <label class="veld veld-check">
+      <input type="checkbox" id="bergingVerplicht" /> Berging verplicht
+    </label>
+  </section>
+
+  <section id="adres" class="panel">
+    <p class="hint">
+      Prijs- en WOZ-historie op adres, ook van woningen die niet meer op Funda staan.
+      Vereist de lokale brug.
+    </p>
+    <label class="veld">Adres
+      <input type="text" id="adres-q" placeholder="Erpstraat 51 Arnhem" />
+    </label>
+    <button type="button" id="adres-zoek">Zoek historie</button>
+    <div id="adres-uit"></div>
+  </section>
+
+  <script src="common.js"></script>
+  <script src="scoring.js"></script>
+  <script src="popup.js"></script>
+</body>
+
 </html>

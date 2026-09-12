@@ -14,3 +14,7 @@ tests/.artifacts/
 # en installeert hem met
 #   bridge/.venv/bin/pip install -e ./pyfunda
 pyfunda/
+
+# Opgeslagen Funda-pagina's voor de parsertest: third-party HTML, niet in git.
+# Opnieuw ophalen met: node tests/capture-fixtures.cjs
+tests/fixtures/
